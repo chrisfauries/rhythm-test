@@ -32,6 +32,33 @@ describe("parseLine", () => {
     expect(parseLine("mr | q q q", "3/4").measures).toHaveLength(2);
   });
 
+  it("reads beam groups, including triplets and rests inside a beam", () => {
+    const line = parseLine("[ 8 8 8 8 ] 8 8 [ 3( 8 8 8 ) ] | [ 8 8r 8 ] 8 h", "4/4");
+    expect(line.explicitBeams).toBe(true);
+    const beams = line.measures.map((m) => m.map((n) => n.beam ?? null));
+    expect(beams).toEqual([
+      [0, 0, 0, 0, null, null, 1, 1, 1],
+      [2, 2, 2, null, null],
+    ]);
+  });
+
+  it("beams automatically when a line has no brackets", () => {
+    expect(parseLine("8 8 8 8 h", "4/4").explicitBeams).toBeUndefined();
+  });
+
+  it("rejects beams that can't be drawn", () => {
+    expect(() => parseLine("[ 8 ] 8 h.", "4/4")).toThrow(RhythmParseError);
+    expect(() => parseLine("[ q 8 8 ] h", "4/4")).toThrow(RhythmParseError);
+    expect(() => parseLine("[ 8 8 | 8 8 ] h", "4/4")).toThrow(RhythmParseError);
+  });
+
+  it("matches the book's beaming (four beamed 8ths stay one group)", () => {
+    const line = PAGES.find((p) => p.id === "2")!.exercises[0].line;
+    const m2 = line.measures[1].map((n) => n.beam);
+    expect(new Set(m2.slice(0, 4)).size).toBe(1);
+    expect(m2[0]).not.toBe(m2[4]);
+  });
+
   it("supports triplets", () => {
     const line = parseLine("3( 8 8 8 ) q h", "4/4");
     expect(expectedClaps(line).map((c) => c.pos)).toEqual([0, 1 / 3, 2 / 3, 1, 2]);
@@ -61,8 +88,8 @@ describe("counts", () => {
       "and",
       "a",
       "two",
-      "trip",
-      "let",
+      "la",
+      "li",
     ]);
   });
 

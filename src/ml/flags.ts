@@ -5,8 +5,9 @@ const models = (new URLSearchParams(window.location.search).get("model") ?? "").
 export const USE_COUNT_MODEL = models.includes("counts");
 
 /**
- * How grading trusts the count model (chosen on held-out takes: of counts
- * said correctly under a clap, none were marked wrong; of simulated wrong
- * numbers, 79% were caught).
+ * How grading trusts the count model. Chosen on held-out takes to almost never
+ * mark a correct count wrong. Model v4: of 312 counts said correctly under a
+ * clap, 91% were confirmed and none marked wrong; of simulated wrong numbers,
+ * 49% were caught, 43% left on timing-only credit, 9% slipped through.
  */
-export const COUNT_MODEL_RULE = { confirmAbove: 0.4, wrongAbove: 0.5, expectedBelow: 0.2 };
+export const COUNT_MODEL_RULE = { confirmAbove: 0.4, wrongAbove: 0.8, expectedBelow: 0.08 };

@@ -1,4 +1,4 @@
-import { clickSamples, CLICK_HZ } from "../audio/AudioEngine";
+import { clickSamples, CLICK_HZ } from "../audio/click";
 import { Biquad } from "../audio/biquad";
 import { encodeWav } from "../audio/Recording";
 import { BundleMeta, bundleEntries, roundAll } from "../debug/debugBundle";

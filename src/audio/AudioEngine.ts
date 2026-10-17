@@ -9,6 +9,10 @@
 //     output latency (the student hears the click late) plus input latency.
 //     Calibration measures that total and the analysis subtracts it.
 
+import { CLICK_HZ, clickSamples } from "./click";
+
+export { CLICK_HZ, clickSamples } from "./click";
+
 export type AudioListener = (samples: Float32Array, time: number) => void;
 
 const TAP_WORKLET = `
@@ -47,20 +51,6 @@ export interface ClickEvent {
 export interface ClickHandle {
   stop(): void;
 }
-
-export const CLICK_HZ = { normal: 1000, accent: 1500 };
-
-/** The metronome click (before the volume gain). */
-export const clickSamples = (sampleRate: number, freq: number) => {
-  const len = Math.round(sampleRate * 0.06);
-  const data = new Float32Array(len);
-  const attack = sampleRate * 0.003;
-  for (let i = 0; i < len; i++) {
-    const env = Math.min(1, i / attack) * Math.exp(-i / (sampleRate * 0.012));
-    data[i] = Math.sin((2 * Math.PI * freq * i) / sampleRate) * env * 0.8;
-  }
-  return data;
-};
 
 const makeClick = (ctx: AudioContext, freq: number) => {
   const data = clickSamples(ctx.sampleRate, freq);

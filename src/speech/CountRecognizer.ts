@@ -26,8 +26,11 @@ const WORD_TO_LABEL: Record<string, string> = {
   ee: "e",
   a: "a",
   uh: "a",
-  trip: "trip",
-  let: "let",
+  // Triplets are counted "1 la li".
+  la: "la",
+  lah: "la",
+  li: "li",
+  lee: "li",
 };
 
 const GRAMMAR = JSON.stringify([...Object.keys(WORD_TO_LABEL), "[unk]"]);

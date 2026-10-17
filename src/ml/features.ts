@@ -84,6 +84,35 @@ export const toFeatureRate = (audio: Float32Array, sampleRate: number) => {
   return out;
 };
 
+/** Log mel energies of the frame whose window starts at sample `s`, into out[o..o+N_MELS). */
+const logMelFrame = (x16: Float32Array, s: number, re: Float64Array, im: Float64Array, out: Float32Array, o: number) => {
+  re.fill(0);
+  im.fill(0);
+  for (let n = 0; n < WIN; n++) {
+    const i = s + n;
+    re[n] = i >= 0 && i < x16.length ? x16[i] * hann[n] : 0;
+  }
+  fft(re, im);
+  for (let m = 0; m < N_MELS; m++) {
+    const { start, w } = MEL_FILTERS[m];
+    let e = 0;
+    for (let k = 0; k < w.length; k++) e += w[k] * (re[start + k] ** 2 + im[start + k] ** 2);
+    out[o + m] = Math.log(e + 1e-8);
+  }
+};
+
+/** Zero mean, unit variance over the whole array, in place. */
+const standardize = (out: Float32Array) => {
+  let mean = 0;
+  for (let i = 0; i < out.length; i++) mean += out[i];
+  mean /= out.length;
+  let sd = 0;
+  for (let i = 0; i < out.length; i++) sd += (out[i] - mean) ** 2;
+  sd = Math.sqrt(sd / out.length) || 1;
+  for (let i = 0; i < out.length; i++) out[i] = (out[i] - mean) / sd;
+  return out;
+};
+
 /**
  * Log-mel patch [PATCH_FRAMES][N_MELS] (row-major) around `anchor` seconds
  * into `x16` (audio at FEATURE_RATE), normalized to zero mean, unit variance.
@@ -93,28 +122,24 @@ export const melPatch = (x16: Float32Array, anchor: number): Float32Array => {
   const first = Math.round((anchor - PATCH_BEFORE) * FEATURE_RATE) - WIN / 2;
   const re = new Float64Array(N_FFT);
   const im = new Float64Array(N_FFT);
-  for (let f = 0; f < PATCH_FRAMES; f++) {
-    re.fill(0);
-    im.fill(0);
-    const s = first + f * HOP;
-    for (let n = 0; n < WIN; n++) {
-      const i = s + n;
-      re[n] = i >= 0 && i < x16.length ? x16[i] * hann[n] : 0;
-    }
-    fft(re, im);
-    for (let m = 0; m < N_MELS; m++) {
-      const { start, w } = MEL_FILTERS[m];
-      let e = 0;
-      for (let k = 0; k < w.length; k++) e += w[k] * (re[start + k] ** 2 + im[start + k] ** 2);
-      out[f * N_MELS + m] = Math.log(e + 1e-8);
-    }
-  }
-  let mean = 0;
-  for (let i = 0; i < out.length; i++) mean += out[i];
-  mean /= out.length;
-  let sd = 0;
-  for (let i = 0; i < out.length; i++) sd += (out[i] - mean) ** 2;
-  sd = Math.sqrt(sd / out.length) || 1;
-  for (let i = 0; i < out.length; i++) out[i] = (out[i] - mean) / sd;
-  return out;
+  for (let f = 0; f < PATCH_FRAMES; f++) logMelFrame(x16, first + f * HOP, re, im, out, f * N_MELS);
+  return standardize(out);
+};
+
+/** Seconds between the frames of melFrames(). */
+export const FRAME_SEC = HOP / FEATURE_RATE;
+
+/**
+ * Log-mel frames of a whole recording, [frames][N_MELS] row-major: frame f is
+ * centered at f * FRAME_SEC seconds. Normalized over the whole take (zero
+ * mean, unit variance), so the mic's level doesn't matter. The input of the
+ * audio model (ml/audioModel.ts).
+ */
+export const melFrames = (x16: Float32Array): { frames: number; data: Float32Array } => {
+  const frames = Math.floor(x16.length / HOP) + 1;
+  const out = new Float32Array(frames * N_MELS);
+  const re = new Float64Array(N_FFT);
+  const im = new Float64Array(N_FFT);
+  for (let f = 0; f < frames; f++) logMelFrame(x16, f * HOP - WIN / 2, re, im, out, f * N_MELS);
+  return { frames, data: standardize(out) };
 };

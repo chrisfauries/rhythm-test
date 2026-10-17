@@ -81,6 +81,17 @@ const beamGroups = (ts: TimeSignature) => {
   return [new Fraction(1, 4)];
 };
 
+/** One beam per bracketed group, exactly as written. */
+const explicitBeams = (rhythm: RhythmNote[], notes: StaveNote[]) => {
+  const groups = new Map<number, StaveNote[]>();
+  rhythm.forEach((n, i) => {
+    if (n.beam === undefined) return;
+    if (!groups.has(n.beam)) groups.set(n.beam, []);
+    groups.get(n.beam)!.push(notes[i]);
+  });
+  return Array.from(groups.values()).map((g) => new Beam(g));
+};
+
 /**
  * Pixels per quarter note that this measure needs so that, with notes spaced
  * in proportion to their length, nothing collides.
@@ -239,7 +250,11 @@ const Staff: React.FC<Props> = ({ line, noteColors, laneHeight = 0, overlay, onL
           let j = i;
           while (j < rhythm.length && rhythm[j].tuplet?.id === t.id) j++;
           const group = notes.slice(i, j);
-          const beamable = rhythm.slice(i, j).every((n) => !n.rest && ["8", "16", "32"].includes(n.base));
+          const inTuplet = rhythm.slice(i, j);
+          // A beamed triplet shows just its "3"; unbeamed ones get a bracket.
+          const beamable = line.explicitBeams
+            ? inTuplet.every((n) => n.beam !== undefined && n.beam === inTuplet[0].beam)
+            : inTuplet.every((n) => !n.rest && ["8", "16", "32"].includes(n.base));
           tuplets.push(
             new Tuplet(group, { numNotes: t.notes, notesOccupied: t.occupied, bracketed: !beamable })
           );
@@ -249,7 +264,8 @@ const Staff: React.FC<Props> = ({ line, noteColors, laneHeight = 0, overlay, onL
         const voice = new Voice({ numBeats: ts.num, beatValue: ts.den });
         voice.setMode(Voice.Mode.SOFT);
         voice.addTickables(notes);
-        const beams = Beam.generateBeams(notes, { groups: beamGroups(ts), stemDirection: 1 });
+        // Book lines spell out their beams ([ ] in the notation); typed rhythms are beamed by beat.
+        const beams = line.explicitBeams ? explicitBeams(rhythm, notes) : Beam.generateBeams(notes, { groups: beamGroups(ts), stemDirection: 1 });
         new Formatter().joinVoices([voice]).format([voice], Math.max(40, W - 12));
         notes.forEach((note) => note.setStave(stave));
 

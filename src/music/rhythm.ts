@@ -8,7 +8,10 @@
 //   suffix "~"        tied to the next note         e.g.  h~ | q
 //   mr                full-measure rest (any meter)
 //   3( ... )          triplet: three notes in the time of two  e.g. 3( 8 8 8 )
-// Example: "q q qr q | h. q | 8 8 q 3( 8 8 8 ) q"
+//   [ ... ]           beamed group (8ths and shorter, rests allowed inside) e.g. [ 8 8 8 8 ]
+//                     When a line has no brackets, notes are beamed automatically by beat;
+//                     when it has any, only bracketed notes are beamed (others get flags).
+// Example: "q q qr q | h. q | [ 8 8 ] q [ 3( 8 8 8 ) ] q"
 //
 // All positions/durations are measured in quarter notes ("q-units").
 
@@ -31,6 +34,8 @@ export interface RhythmNote {
   /** A whole-measure rest; its length is the measure length. */
   measureRest?: boolean;
   tuplet?: Tuplet;
+  /** Beam group id (shared by the notes of one beamed group within a line). */
+  beam?: number;
 }
 
 export interface TimeSignature {
@@ -41,6 +46,8 @@ export interface TimeSignature {
 export interface Line {
   timeSig: TimeSignature;
   measures: RhythmNote[][];
+  /** Beams are written out with [ ] (as in the book), rather than drawn automatically by beat. */
+  explicitBeams?: boolean;
 }
 
 const BASE_Q: Record<BaseDuration, number> = {
@@ -98,16 +105,22 @@ export const parseLine = (source: string, timeSig: TimeSignature | string): Line
   }
 
   let tupletId = 0;
+  let beamId = 0;
+  const explicitBeams = /[[\]]/.test(source);
   const measures = measureTexts.map((text, mi) => {
     const where = `Measure ${mi + 1}`;
     const tokens = text
       .replace(/\(/g, " ( ")
       .replace(/\)/g, " ) ")
+      .replace(/\[/g, " [ ")
+      .replace(/\]/g, " ] ")
       .split(/\s+/)
       .filter((t) => t.length > 0);
     const notes: RhythmNote[] = [];
     let tuplet: Tuplet | null = null;
     let tupletStart = 0;
+    let beam: number | null = null;
+    let beamStart = 0;
 
     for (let i = 0; i < tokens.length; i++) {
       const tok = tokens[i];
@@ -126,6 +139,25 @@ export const parseLine = (source: string, timeSig: TimeSignature | string): Line
         tuplet = null;
         continue;
       }
+      if (tok === "[") {
+        if (beam !== null) throw new RhythmParseError(`${where}: beams can't be nested.`);
+        beam = beamId++;
+        beamStart = notes.length;
+        continue;
+      }
+      if (tok === "]") {
+        if (beam === null) throw new RhythmParseError(`${where}: unexpected "]".`);
+        const group = notes.slice(beamStart);
+        if (group.length < 2) throw new RhythmParseError(`${where}: a beam needs at least two notes.`);
+        if (group.some((n) => !n.rest && !["8", "16", "32"].includes(n.base))) {
+          throw new RhythmParseError(`${where}: only 8ths and shorter can be beamed.`);
+        }
+        if (group[0].rest || group[group.length - 1].rest) {
+          throw new RhythmParseError(`${where}: a beam must start and end on a note.`);
+        }
+        beam = null;
+        continue;
+      }
       if (tok === "mr") {
         notes.push({ base: "w", dots: 0, rest: true, tie: false, measureRest: true });
         continue;
@@ -142,9 +174,11 @@ export const parseLine = (source: string, timeSig: TimeSignature | string): Line
         rest: !!m[3],
         tie: !!m[4],
         ...(tuplet ? { tuplet } : {}),
+        ...(beam !== null ? { beam } : {}),
       });
     }
     if (tuplet) throw new RhythmParseError(`${where}: missing ")" after triplet.`);
+    if (beam !== null) throw new RhythmParseError(`${where}: missing "]" after beamed notes.`);
     if (notes.some((n) => n.measureRest) && notes.length > 1) {
       throw new RhythmParseError(`${where}: "mr" must be the only thing in its measure.`);
     }
@@ -171,7 +205,7 @@ export const parseLine = (source: string, timeSig: TimeSignature | string): Line
     })
   );
 
-  return { timeSig: ts, measures };
+  return { timeSig: ts, measures, ...(explicitBeams ? { explicitBeams } : {}) };
 };
 
 /** Line length in q-units. */
@@ -250,7 +284,7 @@ export const NUMBER_WORDS = [
 
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-4;
 
-/** The count syllable for a position (in beats) within a measure: 1, e, &, a, trip, let. */
+/** The count syllable for a position (in beats) within a measure: 1, e, &, a; triplets 1, la, li. */
 export const countLabel = (beatInMeasure: number): string => {
   const whole = Math.floor(beatInMeasure + 1e-4);
   const frac = beatInMeasure - whole;
@@ -258,8 +292,8 @@ export const countLabel = (beatInMeasure: number): string => {
   if (near(frac, 0.5)) return "and";
   if (near(frac, 0.25)) return "e";
   if (near(frac, 0.75)) return "a";
-  if (near(frac, 1 / 3)) return "trip";
-  if (near(frac, 2 / 3)) return "let";
+  if (near(frac, 1 / 3)) return "la";
+  if (near(frac, 2 / 3)) return "li";
   return "?";
 };
 

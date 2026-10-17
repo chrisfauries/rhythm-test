@@ -5,7 +5,8 @@ import { Button, Card } from "../components/ui";
 import { downloadDebugBundle } from "../debug/debugBundle";
 import { activityInfo } from "../music/activity";
 import { Exercise } from "../music/book";
-import { beatLength, countDisplay, countLabel, measureLength, placeNotes } from "../music/rhythm";
+import { beatLength, countDisplay, countLabel, lineBeats, measureLength, placeNotes } from "../music/rhythm";
+import { useClickTrack } from "../audio/useClickTrack";
 import { TakeOutcome } from "../session/TakeRunner";
 import { estimateLag } from "../training/capture";
 import CaptureDialog from "../training/CaptureDialog";
@@ -120,6 +121,18 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
   const toVideo = (audible: number) => audible + outcome.micOffset - t0 + (lag ?? 0);
   const fromVideo = (v: number) => v - (lag ?? 0) - outcome.micOffset + t0;
   const posTime = (pos: number) => result.startTime + pos * secPerQ;
+
+  // The metronome, played along with the video (count-in and every beat of the line).
+  const [clickOn, setClickOn] = useState(true);
+  const clicks = useMemo(() => {
+    if (lag === null) return [];
+    const { countInStart, secPerBeat, countInBeats, beatsPerMeasure } = outcome.timing;
+    return Array.from({ length: countInBeats + lineBeats(line) }, (_, i) => ({
+      t: countInStart + i * secPerBeat + outcome.micOffset - t0 + lag,
+      accent: i % beatsPerMeasure === 0,
+    }));
+  }, [lag, outcome, line, t0]);
+  useClickTrack(videoRef, clicks, clickOn);
 
   const seekTo = (pos: number, play = false, until?: number) => {
     const v = videoRef.current;
@@ -517,6 +530,9 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
               </Button>
               <Button variant="secondary" disabled={lag === null} onClick={() => seekTo(-beatLength(ts), true)}>
                 ⏮ From the start
+              </Button>
+              <Button variant="secondary" onClick={() => setClickOn((c) => !c)} title="Play the metronome with the video">
+                {clickOn ? "🔔 Click on" : "🔕 Click off"}
               </Button>
             </div>
           </Card>

@@ -61,3 +61,8 @@ export const ACTIVITIES: ActivityInfo[] = [
 ];
 
 export const activityInfo = (a: Activity): ActivityInfo => ACTIVITIES.find((x) => x.id === a) ?? ACTIVITIES[0];
+
+/** The activity a saved take used, from its settings (older takes stored countMode/useSpeech instead). */
+export const activityOfSettings = (settings: any): Activity =>
+  settings?.activity ??
+  (settings?.useSpeech === false ? "clap" : settings?.countMode === "all" ? "clap-count-all" : "clap-count-notes");

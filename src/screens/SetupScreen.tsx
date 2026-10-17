@@ -22,7 +22,7 @@ interface Props {
   onOpenHistory: () => void;
 }
 
-const shortPageLabel = (id: string) => (id === "CA" ? "✓A" : id === "CB" ? "✓B" : id === "CC" ? "✓C" : id);
+const shortPageLabel = (id: string) => (id === "CA" ? "✓A" : id === "CB" ? "✓B" : id === "CC" ? "✓C" : id === "final" ? "🏁" : id);
 
 const SetupScreen: React.FC<Props> = ({
   settings,
@@ -310,7 +310,7 @@ const SetupScreen: React.FC<Props> = ({
           <svg className="w-20 h-20 ml-3" fill="currentColor" viewBox="0 0 24 24">
             <path d="M8 5v14l11-7z" />
           </svg>
-          {exercise && <span className="text-xs font-bold uppercase tracking-widest mt-1 opacity-80">{exercise.id === "custom" ? "Custom" : `#${exercise.pageId} · ${exercise.label}`}</span>}
+          {exercise && <span className="text-xs font-bold uppercase tracking-widest mt-1 opacity-80">{exercise.id === "custom" ? "Custom" : `#${shortPageLabel(exercise.pageId)} · ${exercise.label}`}</span>}
         </button>
       </div>
     </div>

@@ -1,38 +1,35 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Staff, { StaffLayout } from "../components/Staff";
-import { Button, Card, Pill } from "../components/ui";
+import { Button, Card } from "../components/ui";
 import { downloadBlob } from "../debug/debugBundle";
+import { makeZip } from "../debug/zip";
 import { findPulses } from "../analysis/analyze";
 import { CANDIDATE_OPTIONS, classifyCandidate } from "../audio/clapClassifier";
 import { ClapDetector } from "../audio/ClapDetector";
+import { useClickTrack } from "../audio/useClickTrack";
 import { voiceFrames, voiceOnsetNear, voiceRuns } from "../audio/voice";
+import { activityInfo, activityOfSettings } from "../music/activity";
 import { loadCountModel } from "../ml/countModel";
 import { fft, toFeatureRate } from "../ml/features";
-import { beatLength, countDisplay, parseLine } from "../music/rhythm";
+import { beatLength, measureLength, parseLine } from "../music/rhythm";
 import { estimateLag } from "../training/capture";
 import { json, parseWav, readZip } from "./files";
-import {
-  COUNT_KEYS,
-  countsFromEvents,
-  EventType,
-  LabelEvent,
-  labelsFile,
-  prefill,
-  TakeInfo,
-  takeInfo,
-} from "./labels";
-import Timeline, { View } from "./Timeline";
+import { COUNT_KEYS, countsFromEvents, EventType, LabelEvent, labelsFile, prefill, TakeInfo, takeInfo } from "./labels";
+import { assignEvents, Beat, beatName, buildBeats, snap, wordDisplay } from "./review";
+import Timeline, { Tool, View } from "./Timeline";
 
-// Labeler (?label): open a capture zip, watch the take with everything synced,
-// and correct what happened. The tracks start with what the app (and the
-// count model) detected; you fix them and save <capture>.labels.json, which
-// ml/dataset.js uses for training.
+// Labeler (?label): open a capture zip and check, beat by beat, what the
+// student really did. Each beat starts with what the app (and the count
+// model) found; a person confirms or fixes it with plain buttons, and saves
+// <capture>.labels.json, which ml/dataset.js uses for training. The timeline
+// below is for fine-tuning exactly when something happened.
 
 interface Take {
   name: string;
   diag: any;
   manifest: any;
   info: TakeInfo;
+  claps: boolean;
   audio: Float32Array;
   sampleRate: number;
   videoUrl: string | null;
@@ -41,6 +38,10 @@ interface Take {
   lag: number;
   spectrogram: { cols: number; bins: number; hop: number; data: Uint8ClampedArray };
   hands: { wav: number; together: boolean | null; landmarks?: { points: number[][] }[] }[];
+  /** Every sharp sound the clap detector noticed (claps or not), for snapping added claps. */
+  onsets: number[];
+  /** Where a voice starts near t, for placing added counts. */
+  voiceAt: (t: number) => number | null;
 }
 
 const SPEC_N = 512;
@@ -71,7 +72,10 @@ const spectrogram = (audio: Float32Array, sampleRate: number) => {
   return { cols, bins: SPEC_BINS, hop: SPEC_HOP / 16000, data };
 };
 
-const loadTake = async (zip: File, labels: File | null): Promise<{ take: Take; events: LabelEvent[] }> => {
+const loadTake = async (
+  zip: File,
+  labels: File | null
+): Promise<{ take: Take; events: LabelEvent[]; reviewed: number[]; files: Map<string, Uint8Array> }> => {
   const files = await readZip(zip);
   const diag = json(files.get("diagnostics.json"));
   if (!diag || !files.get("audio.wav")) throw new Error("This zip has no diagnostics.json / audio.wav");
@@ -89,11 +93,22 @@ const loadTake = async (zip: File, labels: File | null): Promise<{ take: Take; e
       lag = diag.video?.startedAtWav != null ? -diag.video.startedAtWav : 0;
     }
   }
+  // Sharp sounds, from the current clap detector.
+  const sounds: { t: number; isClap: boolean }[] = [];
+  const det = new ClapDetector(sampleRate, CANDIDATE_OPTIONS);
+  for (let i = 0; i < audio.length; i += 512) {
+    for (const o of det.process(audio.subarray(i, i + 512), i / sampleRate)) {
+      sounds.push({ t: o.time, isClap: classifyCandidate(audio, sampleRate, 0, o, 0).isClap });
+    }
+  }
+  const vf = voiceFrames(audio, sampleRate, 0);
+  const runs = voiceRuns(vf);
   const take: Take = {
     name: zip.name.replace(/\.zip$/i, ""),
     diag,
     manifest,
     info,
+    claps: activityInfo(activityOfSettings(diag.settings)).claps,
     audio,
     sampleRate,
     videoUrl: videoBytes ? URL.createObjectURL(new Blob([videoBytes as BlobPart], { type: "video/webm" })) : null,
@@ -101,28 +116,48 @@ const loadTake = async (zip: File, labels: File | null): Promise<{ take: Take; e
     lag: videoBytes ? lag ?? 0 : 0,
     spectrogram: spectrogram(audio, sampleRate),
     hands: diag.hands ?? [],
+    onsets: sounds.map((s) => s.t),
+    voiceAt: (t) => voiceOnsetNear(vf, t, runs),
   };
-  const saved = labels ? JSON.parse(await labels.text()) : null;
-  const events: LabelEvent[] = saved?.events ?? (await suggest(diag, info, audio, sampleRate));
-  return { take, events };
+  // Saved labels live inside the zip (labels.json); a separate .labels.json (older saves) also works.
+  const saved = labels ? JSON.parse(await labels.text()) : json(files.get(LABELS_ENTRY));
+  const events: LabelEvent[] = saved?.events ?? (await suggest(take, sounds));
+  return { take, events, reviewed: saved?.reviewed ?? [], files };
 };
 
 const PALM = [0, 5, 9, 13, 17];
+const LABELS_ENTRY = "labels.json";
+
+/** A file the person picked, with a handle to write it back when the browser allows it (Chrome). */
+interface Picked {
+  file: File;
+  handle?: any;
+}
+
+/** The browser's file picker, which (unlike <input type=file>) lets us save back into the zip. */
+const canPickWithHandle = typeof window !== "undefined" && "showOpenFilePicker" in window;
+const pickFiles = async (): Promise<Picked[]> => {
+  try {
+    const handles = await (window as any).showOpenFilePicker({
+      multiple: true,
+      types: [{ description: "Capture zip", accept: { "application/zip": [".zip"], "application/json": [".json"] } }],
+    });
+    return Promise.all(handles.map(async (h: any) => ({ file: await h.getFile(), handle: h })));
+  } catch {
+    return []; // cancelled
+  }
+};
 
 /**
- * Starting labels: claps from the current detector (whatever version made
- * the file), counts the app heard, and for counts it couldn't hear (a clap
- * hid them) the count model's guess where a voice starts there.
+ * Starting labels: claps from the current clap detector, counts the app
+ * heard, and for counts it couldn't hear (a clap hid them) the count model's
+ * guess where a voice starts there.
  */
-const suggest = async (diag: any, info: TakeInfo, audio: Float32Array, sampleRate: number): Promise<LabelEvent[]> => {
+const suggest = async (take: Take, sounds: { t: number; isClap: boolean }[]): Promise<LabelEvent[]> => {
+  const { diag, info, audio, sampleRate } = take;
   const events = prefill(diag, info).filter((e) => e.type !== "clap" && e.type !== "pulse");
   let id = events.reduce((m, e) => Math.max(m, e.id), 0) + 1;
-  const det = new ClapDetector(sampleRate, CANDIDATE_OPTIONS);
-  for (let i = 0; i < audio.length; i += 512) {
-    for (const o of det.process(audio.subarray(i, i + 512), i / sampleRate)) {
-      if (classifyCandidate(audio, sampleRate, 0, o, 0).isClap) events.push({ id: id++, type: "clap", t: o.time, source: "app" });
-    }
-  }
+  for (const s of sounds) if (s.isClap) events.push({ id: id++, type: "clap", t: s.t, source: "app" });
   // Rest pulses from the recorded hand points (palm height; 4:3 camera frames).
   const frames = (diag.hands ?? [])
     .filter((f: any) => f.landmarks?.length)
@@ -138,14 +173,12 @@ const suggest = async (diag: any, info: TakeInfo, audio: Float32Array, sampleRat
   }
 
   if (info.counts.length) {
-    const frames = voiceFrames(audio, sampleRate, 0);
-    const runs = voiceRuns(frames);
     const model = await loadCountModel();
     const x16 = model ? toFeatureRate(audio, sampleRate) : null;
     const have = countsFromEvents(events, info);
     info.counts.forEach((c, i) => {
       if (have[i].label !== null) return;
-      const onset = voiceOnsetNear(frames, c.t, runs);
+      const onset = take.voiceAt(c.t);
       if (onset === null) return;
       const pred = model && x16 ? model.predict(x16, c.t) : null;
       const label = pred && pred.label !== "none" && pred.conf >= 0.4 ? pred.label : "?";
@@ -155,58 +188,137 @@ const suggest = async (diag: any, info: TakeInfo, audio: Float32Array, sampleRat
   return events.sort((a, b) => a.t - b.t);
 };
 
+const TYPE_NAME: Record<EventType, string> = { clap: "👏 clap", count: "🗣️ count", pulse: "👇 rest pulse" };
+
+/** A choice that's clearly on or off without relying on color: inverted, bold, with a check mark. */
+const Choice: React.FC<React.PropsWithChildren<{ on: boolean; onClick: () => void; title?: string; wide?: boolean }>> = ({
+  on,
+  onClick,
+  title,
+  wide,
+  children,
+}) => (
+  <button
+    type="button"
+    title={title}
+    aria-pressed={on}
+    onClick={onClick}
+    className={`rounded-xl border-2 px-3 py-2 text-base font-bold transition ${wide ? "min-w-[8rem]" : "min-w-[3rem]"} ${
+      on ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 bg-white text-slate-700 hover:border-slate-500"
+    }`}
+  >
+    {on && "✓ "}
+    {children}
+  </button>
+);
+
+const timingText = (dt: number) => {
+  const ms = Math.round(dt * 1000);
+  if (Math.abs(ms) < 15) return "right on the beat";
+  return `${Math.abs(ms)} ms ${ms < 0 ? "early" : "late"}`;
+};
+
+const sourceText = (e: LabelEvent) =>
+  e.source === "human" ? "You marked" : e.source === "model" ? "The AI guessed" : e.source === "synthetic" ? "The generator placed" : "The app found";
+
 const Labeler: React.FC = () => {
   const [take, setTake] = useState<Take | null>(null);
   const [events, setEvents] = useState<LabelEvent[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
+  const [beatIdx, setBeatIdx] = useState(0);
+  const [reviewed, setReviewed] = useState<Set<number>>(new Set());
   const [time, setTime] = useState(0);
   const [view, setView] = useState<View>({ start: 0, dur: 10 });
   const [playing, setPlaying] = useState(false);
-  const [rate, setRate] = useState(1);
+  const [rate, setRate] = useState(0.5);
+  const [tool, setTool] = useState<Tool>("select");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [savedAs, setSavedAs] = useState<{ name: string; inPlace: boolean } | null>(null);
+  const [undoCount, setUndoCount] = useState(0);
   const mediaRef = useRef<HTMLVideoElement & HTMLAudioElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const cursorRef = useRef<SVGLineElement>(null);
   const layoutRef = useRef<StaffLayout | null>(null);
   const undo = useRef<LabelEvent[][]>([]);
   const nextId = useRef(1);
+  const stopAt = useRef<number | null>(null);
+  const zipFiles = useRef<Map<string, Uint8Array>>(new Map());
+  const zipHandle = useRef<any>(null);
 
-  const open = async (files: FileList | File[]) => {
-    const list = Array.from(files);
-    const zip = list.find((f) => f.name.toLowerCase().endsWith(".zip"));
-    if (!zip) return setError("Choose a capture .zip (and optionally its .labels.json).");
-    const labels = list.find((f) => f.name.toLowerCase().endsWith(".labels.json")) ?? null;
+  const open = async (list: Picked[]) => {
+    if (!list.length) return;
+    const zip = list.find((f) => f.file.name.toLowerCase().endsWith(".zip"));
+    if (!zip) return setError("Choose a capture .zip.");
+    const labels = list.find((f) => f.file.name.toLowerCase().endsWith(".labels.json"))?.file ?? null;
     setError(null);
+    setLoading(true);
     try {
-      const { take: t, events: ev } = await loadTake(zip, labels);
+      const { take: t, events: ev, reviewed: rv, files } = await loadTake(zip.file, labels);
+      zipFiles.current = files;
+      zipHandle.current = zip.handle ?? null;
       setTake(t);
       setEvents(ev);
       nextId.current = ev.reduce((m, e) => Math.max(m, e.id), 0) + 1;
       undo.current = [];
       setSelected(null);
+      setReviewed(new Set(rv));
+      setBeatIdx(0);
       setTime(0);
       setDirty(false);
+      setSavedAs(null);
+      setTool("select");
       const dur = t.audio.length / t.sampleRate;
-      setView({ start: Math.max(0, t.info.lineStart - 1.5), dur: Math.min(dur, 8) });
+      setView({ start: Math.max(0, t.info.lineStart - 1), dur: Math.min(dur, 6) });
     } catch (err) {
       console.error(err);
       setError(String(err));
+    } finally {
+      setLoading(false);
     }
   };
 
+  // The metronome, played along with the video.
+  const [clickOn, setClickOn] = useState(true);
+  const clicks = useMemo(
+    () => (take ? take.info.beats.map((b, i) => ({ t: b + take.lag, accent: i % take.info.beatsPerMeasure === 0 })) : []),
+    [take]
+  );
+  useClickTrack(mediaRef, clicks, clickOn);
+
   const duration = take ? take.audio.length / take.sampleRate : 0;
   const line = useMemo(() => (take ? parseLine(take.diag.exercise.source, take.diag.exercise.timeSig) : null), [take]);
-  const counts = useMemo(() => (take ? countsFromEvents(events, take.info) : []), [events, take]);
+  const beats = useMemo(() => (take ? buildBeats(take.info, take.claps) : []), [take]);
+  const assigned = useMemo(() => (take ? assignEvents(beats, events, take.info) : []), [beats, events, take]);
+  const beat: Beat | undefined = beats[beatIdx];
+  const here = assigned[beatIdx];
+  const band = useMemo((): [number, number] | null => {
+    if (!beat) return null;
+    const prev = beats[beatIdx - 1]?.t ?? beat.t - 0.6;
+    const next = beats[beatIdx + 1]?.t ?? beat.t + 0.6;
+    return [Math.max(beat.t - 0.4, (prev + beat.t) / 2), Math.min(beat.t + 0.5, (beat.t + next) / 2)];
+  }, [beat, beats, beatIdx]);
 
   const change = useCallback((fn: (ev: LabelEvent[]) => LabelEvent[]) => {
     setEvents((ev) => {
-      undo.current.push(ev);
+      // (StrictMode runs updaters twice; don't record the same state twice.)
+      if (undo.current[undo.current.length - 1] !== ev) undo.current.push(ev);
       if (undo.current.length > 200) undo.current.shift();
       return fn(ev).sort((a, b) => a.t - b.t);
     });
     setDirty(true);
+    setSavedAs(null);
   }, []);
+
+  const undoLast = useCallback(() => {
+    const prev = undo.current.pop();
+    if (prev) {
+      setEvents(prev);
+      setDirty(true);
+    }
+  }, []);
+  useEffect(() => setUndoCount(undo.current.length), [events]);
 
   const seek = useCallback(
     (t: number) => {
@@ -219,24 +331,103 @@ const Labeler: React.FC = () => {
     [take, duration]
   );
 
-  const nearestCountLabel = useCallback(
-    (t: number) => {
-      if (!take?.info.counts.length) return "?";
-      return take.info.counts.reduce((b, c) => (Math.abs(c.t - t) < Math.abs(b.t - t) ? c : b)).label;
+  const togglePlay = useCallback(() => {
+    const m = mediaRef.current;
+    if (!m) return;
+    stopAt.current = null;
+    if (m.paused) m.play();
+    else m.pause();
+  }, []);
+
+  /** Plays the current beat (with a little lead-in), then stops. */
+  const playBeat = useCallback(() => {
+    const m = mediaRef.current;
+    if (!m || !band) return;
+    seek(band[0] - 0.35);
+    stopAt.current = band[1] + 0.15;
+    m.play();
+  }, [band, seek]);
+
+  const goTo = useCallback(
+    (i: number) => {
+      if (!beats.length) return;
+      const k = Math.max(0, Math.min(beats.length - 1, i));
+      setBeatIdx(k);
+      setSelected(null);
+      const b = beats[k];
+      mediaRef.current?.pause();
+      seek(b.t - 0.05);
+      setView((v) => (b.t < v.start + v.dur * 0.15 || b.t > v.start + v.dur * 0.85 ? { ...v, start: Math.max(-1, b.t - v.dur / 2) } : v));
     },
-    [take]
+    [beats, seek]
   );
 
-  const add = useCallback(
-    (type: EventType, t: number) => {
-      const e: LabelEvent = { id: nextId.current++, type, t, source: "human", label: type === "count" ? nearestCountLabel(t) : undefined };
+  const markReviewed = useCallback((pos: number) => {
+    setReviewed((r) => (r.has(pos) ? r : new Set(r).add(pos)));
+    setDirty(true);
+    setSavedAs(null);
+  }, []);
+
+  // ---- Beat actions ------------------------------------------------------
+  const human = (e: LabelEvent): LabelEvent => ({ ...e, source: "human" });
+  const addEvent = useCallback(
+    (type: EventType, t: number, label?: string) => {
+      const e: LabelEvent = { id: nextId.current++, type, t, source: "human", label };
       change((ev) => [...ev, e]);
-      setSelected(e.id);
+      return e;
     },
-    [change, nearestCountLabel]
+    [change]
   );
+  const removeEvent = useCallback((id: number) => change((ev) => ev.filter((x) => x.id !== id)), [change]);
 
-  // Playback clock: the media element is the master.
+  const setClap = (yes: boolean) => {
+    if (!beat?.note || !take) return;
+    const cur = here.clap;
+    if (yes && !cur) addEvent("clap", snap(beat.note.t, take.onsets));
+    if (yes && cur) change((ev) => ev.map((x) => (x.id === cur.id ? human(x) : x)));
+    if (!yes && cur) removeEvent(cur.id);
+    markReviewed(beat.pos);
+  };
+  const setPulse = (yes: boolean) => {
+    if (!beat?.rest) return;
+    const cur = here.pulse;
+    if (yes && !cur) addEvent("pulse", beat.rest.t);
+    if (yes && cur) change((ev) => ev.map((x) => (x.id === cur.id ? human(x) : x)));
+    if (!yes && cur) removeEvent(cur.id);
+    markReviewed(beat.pos);
+  };
+  const setWord = (label: string | null) => {
+    if (!beat?.count || !take) return;
+    const cur = here.word;
+    if (label === null) {
+      if (cur) removeEvent(cur.id);
+    } else if (cur) {
+      change((ev) => ev.map((x) => (x.id === cur.id ? { ...x, label, source: "human" } : x)));
+    } else {
+      addEvent("count", take.voiceAt(beat.count.t) ?? beat.count.t, label);
+    }
+    markReviewed(beat.pos);
+  };
+  const confirmAndNext = () => {
+    if (!beat) return;
+    const ids = new Set([here.clap, here.word, here.pulse].filter(Boolean).map((e) => e!.id));
+    if (Array.from(ids).some((id) => events.find((e) => e.id === id)?.source !== "human")) {
+      change((ev) => ev.map((x) => (ids.has(x.id) ? human(x) : x)));
+    }
+    markReviewed(beat.pos);
+    const next = beats.findIndex((b, i) => i > beatIdx && !reviewed.has(b.pos));
+    goTo(next >= 0 ? next : Math.min(beats.length - 1, beatIdx + 1));
+  };
+
+  const words = useMemo(() => {
+    const n = take?.info.beatsPerMeasure ?? 4;
+    const nums = Array.from({ length: Math.min(9, n) }, (_, i) => COUNT_KEYS[String(i + 1)]);
+    const triplets = take?.info.counts.some((c) => c.label === "la" || c.label === "li") ? ["la", "li"] : [];
+    return [...nums, "e", "and", "a", ...triplets];
+  }, [take]);
+
+  // ---- Playback ------------------------------------------------------------
+  // The media element is the master clock.
   useEffect(() => {
     if (!take) return;
     let raf = 0;
@@ -244,6 +435,10 @@ const Labeler: React.FC = () => {
       const m = mediaRef.current;
       if (m && !m.paused) {
         const t = m.currentTime - take.lag;
+        if (stopAt.current !== null && t >= stopAt.current) {
+          m.pause();
+          stopAt.current = null;
+        }
         setTime(t);
         setView((v) => (t > v.start + v.dur * 0.9 || t < v.start ? { ...v, start: Math.max(-1, t - v.dur * 0.1) } : v));
       }
@@ -307,67 +502,54 @@ const Labeler: React.FC = () => {
         const ox = (w - vw * s) / 2;
         const oy = (h - vh * s) / 2;
         for (const hand of best.landmarks ?? []) {
-          g.fillStyle = best.together ? "#FFB81C" : "#34d399";
+          g.fillStyle = "rgba(255,255,255,0.9)";
           for (const [px, py] of hand.points) {
             g.beginPath();
             g.arc(ox + px * vw * s, oy + py * vh * s, 2.5, 0, Math.PI * 2);
             g.fill();
           }
-          const cx = PALM.reduce((a, i) => a + hand.points[i][0], 0) / 5;
-          const cy = PALM.reduce((a, i) => a + hand.points[i][1], 0) / 5;
-          g.strokeStyle = "#e11d48";
-          g.lineWidth = 2;
-          g.beginPath();
-          g.arc(ox + cx * vw * s, oy + cy * vh * s, 7, 0, Math.PI * 2);
-          g.stroke();
+        }
+        if (best.together !== null) {
+          const text = best.together ? "🙌 hands together" : "🤲 hands apart";
+          g.font = "bold 14px system-ui";
+          const tw = g.measureText(text).width;
+          g.fillStyle = "rgba(15,23,42,0.75)";
+          g.fillRect(8, 8, tw + 16, 26);
+          g.fillStyle = "#fff";
+          g.fillText(text, 16, 26);
         }
       }
     }
   }, [time, take, line]);
 
-  // Keyboard shortcuts.
+  // Optional keyboard shortcuts (every one has a button too).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!take || (e.target as HTMLElement).closest("input, textarea")) return;
-      const m = mediaRef.current;
       const sel = events.find((x) => x.id === selected);
       if (e.key === " ") {
         e.preventDefault();
-        if (m) {
-          if (m.paused) {
-            m.play();
-            setPlaying(true);
-          } else {
-            m.pause();
-            setPlaying(false);
-          }
-        }
+        if (mediaRef.current?.paused) playBeat();
+        else mediaRef.current?.pause();
       } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        const step = (e.shiftKey ? 0.01 : 0.05) * (e.key === "ArrowLeft" ? -1 : 1);
-        if (sel && e.altKey) change((ev) => ev.map((x) => (x.id === sel.id ? { ...x, t: x.t + step, source: "human" } : x)));
-        else seek(time + step);
+        goTo(beatIdx + (e.key === "ArrowLeft" ? -1 : 1));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        confirmAndNext();
       } else if ((e.key === "Delete" || e.key === "Backspace") && sel) {
-        change((ev) => ev.filter((x) => x.id !== sel.id));
+        removeEvent(sel.id);
         setSelected(null);
       } else if (e.key === "z" && (e.ctrlKey || e.metaKey)) {
-        const prev = undo.current.pop();
-        if (prev) setEvents(prev);
-      } else if (e.key === "c") add("clap", time);
-      else if (e.key === "p") add("pulse", time);
-      else if (e.key === "w") add("count", time);
-      else if (sel?.type === "count" && COUNT_KEYS[e.key]) {
-        change((ev) => ev.map((x) => (x.id === sel.id ? { ...x, label: COUNT_KEYS[e.key], source: "human" } : x)));
-      } else if (e.key === "[" || e.key === "]") {
-        setView((v) => {
-          const dur = Math.max(0.4, Math.min(duration + 2, v.dur * (e.key === "[" ? 1.5 : 1 / 1.5)));
-          return { start: Math.max(-1, time - dur / 2), dur };
-        });
+        undoLast();
+      } else if (/^[1-9enuali]$/.test(e.key) && !e.ctrlKey && !e.metaKey) {
+        if (sel?.type === "count") change((ev) => ev.map((x) => (x.id === sel.id ? { ...x, label: COUNT_KEYS[e.key], source: "human" } : x)));
+        else setWord(COUNT_KEYS[e.key]);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [take, events, selected, time, seek, change, add, duration]);
+  });
 
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
@@ -377,163 +559,385 @@ const Labeler: React.FC = () => {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const save = () => {
+  /** Puts labels.json into the take's zip: written back to the opened file when the browser allows, else downloaded. */
+  const save = async () => {
     if (!take) return;
-    const file = labelsFile(take.name, events, take.info);
-    downloadBlob(new Blob([JSON.stringify(file, null, 1)], { type: "application/json" }), `${take.name}.labels.json`);
+    const labels = labelsFile(take.name, events, take.info, Array.from(reviewed));
+    zipFiles.current.set(LABELS_ENTRY, new TextEncoder().encode(JSON.stringify(labels, null, 1)));
+    const blob = makeZip(Array.from(zipFiles.current.entries()).map(([name, data]) => ({ name, data })));
+    const name = `${take.name}.zip`;
+    const h = zipHandle.current;
+    if (h?.createWritable) {
+      try {
+        if ((await h.queryPermission?.({ mode: "readwrite" })) !== "granted") await h.requestPermission({ mode: "readwrite" });
+        const w = await h.createWritable();
+        await w.write(blob);
+        await w.close();
+        setDirty(false);
+        setSavedAs({ name, inPlace: true });
+        return;
+      } catch (err) {
+        console.warn("Couldn't write the zip in place; downloading instead.", err);
+      }
+    }
+    downloadBlob(blob, name);
     setDirty(false);
+    setSavedAs({ name, inPlace: false });
   };
 
   const sel = events.find((e) => e.id === selected);
-  const fmt = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
-  const countSummary = counts.reduce(
-    (a, c, i) => {
-      const exp = take!.info.counts[i].label;
-      if (c.label === null) a.none++;
-      else if (c.label === exp) a.match++;
-      else if (c.label === "?") a.unsure++;
-      else a.differ++;
-      return a;
-    },
-    { match: 0, differ: 0, unsure: 0, none: 0 }
-  );
+  const ts = line?.timeSig;
+  const checked = beats.filter((b) => reviewed.has(b.pos)).length;
 
+  // ---- Page --------------------------------------------------------------
   return (
     <div
       className="min-h-screen w-full max-w-[1400px] mx-auto px-4 py-4 flex flex-col gap-3"
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
-        open(e.dataTransfer.files);
+        // Ask for file handles while the drop event is live (Chrome), so saving can write back into the zip.
+        const files = Array.from(e.dataTransfer.files);
+        const handles = Array.from(e.dataTransfer.items).map((i) => (i as any).getAsFileSystemHandle?.() ?? null);
+        Promise.all(handles)
+          .catch(() => [])
+          .then((hs: any[]) => open(files.map((file) => ({ file, handle: hs.find((h) => h?.kind === "file" && h.name === file.name) }))));
       }}
     >
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-black tracking-tight text-walsh-green">Labeler</h1>
-        <label className="cursor-pointer rounded-full bg-slate-100 dark:bg-slate-800 px-4 py-2 text-sm font-bold hover:bg-slate-200">
-          Open capture…
-          <input
-            type="file"
-            accept=".zip,.json"
-            multiple
-            className="hidden"
-            onChange={(e) => e.target.files && open(e.target.files)}
-          />
-        </label>
+        {canPickWithHandle ? (
+          <button
+            type="button"
+            className="rounded-full bg-slate-200 px-4 py-2 text-sm font-bold hover:bg-slate-300"
+            onClick={async () => open(await pickFiles())}
+          >
+            📂 Open a take…
+          </button>
+        ) : (
+          <label className="cursor-pointer rounded-full bg-slate-200 px-4 py-2 text-sm font-bold hover:bg-slate-300">
+            📂 Open a take…
+            <input
+              type="file"
+              accept=".zip,.json"
+              multiple
+              className="hidden"
+              onChange={(e) => e.target.files && open(Array.from(e.target.files).map((file) => ({ file })))}
+            />
+          </label>
+        )}
         {take && (
           <>
-            <span className="font-mono text-sm text-slate-600">{take.name}</span>
-            <span className="text-xs text-slate-500">
-              {take.diag.exercise.id} · {take.diag.exercise.tempo} BPM · {take.diag.settings.activity ?? take.diag.settings.countMode}
-              {take.manifest ? ` · ${take.manifest.performance} · ${take.manifest.setting} · ${take.manifest.mic}` : ""}
-            </span>
-            <div className="ml-auto flex items-center gap-2">
-              {dirty && <span className="text-xs text-amber-600 font-semibold">unsaved</span>}
-              <Button onClick={save}>Save labels</Button>
+            <div className="flex flex-col leading-tight">
+              <span className="font-mono text-sm text-slate-700">{take.name}</span>
+              <span className="text-xs text-slate-500">
+                Line {take.diag.exercise.id} · {take.diag.exercise.tempo} BPM · {activityInfo(activityOfSettings(take.diag.settings)).label}
+                {take.manifest ? ` · recorded as “${take.manifest.performance}”` : ""}
+              </span>
+            </div>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="text-sm text-slate-600">{savedAs ? `Saved ✓` : dirty ? "Not saved yet" : ""}</span>
+              <Button onClick={save}>💾 Save labels</Button>
             </div>
           </>
         )}
       </div>
-      {error && <p className="text-sm text-rose-600">{error}</p>}
+      {savedAs && (
+        <p className="text-sm text-slate-600">
+          {savedAs.inPlace ? (
+            <>
+              Saved the labels into <b className="font-mono">{savedAs.name}</b>. Open it again any time to keep working.
+            </>
+          ) : (
+            <>
+              This browser can't change the file you opened, so it downloaded <b className="font-mono">{savedAs.name}</b> with the labels
+              inside. Replace the original zip in <span className="font-mono">ml/captures/</span> with it.
+            </>
+          )}
+        </p>
+      )}
+      {error && <p className="text-sm font-semibold text-rose-700">⚠️ {error}</p>}
+
       {!take && (
-        <Card className="text-center text-slate-500 py-16">
-          Drop a capture zip here (and its .labels.json, to keep editing), or use “Open capture…”.
+        <Card className="py-10 px-8 max-w-2xl mx-auto w-full">
+          <h2 className="text-xl font-black mb-4">Check what really happened in a take</h2>
+          <ol className="flex flex-col gap-3 text-slate-700">
+            <li>
+              <b>1. Open a take.</b> Drop a capture zip here, or press “📂 Open a take…”. If you've labeled it before, your labels open with
+              it.
+            </li>
+            <li>
+              <b>2. Check each beat.</b> The app shows what it heard and saw on that beat. Press <b>▶ Play this beat</b> to watch it, fix
+              anything that's wrong with the buttons, then press <b>✓ Looks right, next</b>.
+            </li>
+            <li>
+              <b>3. Save.</b> Press “💾 Save labels”. The labels are saved inside the take's zip, ready for training.
+            </li>
+          </ol>
+          <p className="mt-4 text-sm text-slate-500">
+            Only takes with mistakes need this. Takes recorded as “as written” are labeled by the music itself.
+          </p>
+          {loading && <p className="mt-4 font-semibold">Opening…</p>}
         </Card>
       )}
 
-      {take && line && (
+      {take && line && ts && (
         <>
-          <div className="grid gap-3 lg:grid-cols-[minmax(320px,520px)_1fr]">
-            <div className="relative bg-black rounded-2xl overflow-hidden aspect-[4/3]">
-              {take.videoUrl ? (
-                <video
-                  ref={mediaRef}
-                  src={take.videoUrl}
-                  className="absolute inset-0 w-full h-full object-contain"
-                  onLoadedMetadata={onMeta}
-                  onPause={() => setPlaying(false)}
-                  onPlay={() => setPlaying(true)}
-                  playsInline
-                />
-              ) : (
-                <audio ref={mediaRef} src={take.audioUrl} onPause={() => setPlaying(false)} onPlay={() => setPlaying(true)} />
-              )}
-              <canvas ref={overlayRef} className="absolute inset-0 w-full h-full pointer-events-none" />
-              {!take.videoUrl && <div className="absolute inset-0 flex items-center justify-center text-slate-400">No video</div>}
+          <div className="grid gap-3 lg:grid-cols-[minmax(320px,480px)_1fr]">
+            {/* Video and playback */}
+            <div className="flex flex-col gap-2">
+              <div className="relative bg-black rounded-2xl overflow-hidden aspect-[4/3]">
+                {take.videoUrl ? (
+                  <video
+                    ref={mediaRef}
+                    src={take.videoUrl}
+                    className="absolute inset-0 w-full h-full object-contain"
+                    onLoadedMetadata={onMeta}
+                    onPause={() => setPlaying(false)}
+                    onPlay={() => setPlaying(true)}
+                    playsInline
+                  />
+                ) : (
+                  <audio ref={mediaRef} src={take.audioUrl} onPause={() => setPlaying(false)} onPlay={() => setPlaying(true)} />
+                )}
+                <canvas ref={overlayRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+                {!take.videoUrl && <div className="absolute inset-0 flex items-center justify-center text-slate-400">No video in this take</div>}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="secondary" onClick={togglePlay} className="!px-5 !py-2.5">
+                  {playing ? "⏸ Pause" : "▶ Play from here"}
+                </Button>
+                <span className="text-sm text-slate-600 ml-1">Speed</span>
+                {[
+                  [0.25, "¼"],
+                  [0.5, "½"],
+                  [1, "Normal"],
+                ].map(([r, name]) => (
+                  <Choice key={r} on={rate === r} onClick={() => setRate(r as number)}>
+                    {name}
+                  </Choice>
+                ))}
+                <Choice on={clickOn} onClick={() => setClickOn((c) => !c)} title="Play the metronome with the video">
+                  🔔 Click
+                </Choice>
+              </div>
             </div>
+
+            {/* Staff and the beat being checked */}
             <div className="flex flex-col gap-3 min-w-0">
               <div className="rounded-2xl bg-white border border-slate-200 px-3 pt-2 overflow-x-auto">
                 <Staff
                   line={line}
+                  laneHeight={22}
                   onLayout={(l) => (layoutRef.current = l)}
-                  overlay={() => <line ref={cursorRef} stroke="#FFB81C" strokeWidth={4} strokeLinecap="round" opacity={0} />}
+                  overlay={(layout) => (
+                    <>
+                      <line ref={cursorRef} stroke="#e11d48" strokeWidth={3} strokeLinecap="round" opacity={0} />
+                      {beats.map((b, i) => {
+                        const r = layout.rowOf(b.pos);
+                        const row = layout.rows[r];
+                        const x = layout.xOf(b.pos, r);
+                        const cur = i === beatIdx;
+                        return (
+                          <g key={b.pos} style={{ cursor: "pointer" }} onClick={() => goTo(i)}>
+                            {cur && (
+                              <rect
+                                x={x - 15}
+                                y={row.top + 4}
+                                width={30}
+                                height={row.staffBottom + 22 - row.top - 4}
+                                rx={8}
+                                fill="rgba(148,163,184,0.2)"
+                                stroke="#334155"
+                                strokeWidth={2}
+                                strokeDasharray="4 3"
+                              />
+                            )}
+                            <rect x={x - 15} y={row.top + 4} width={30} height={row.staffBottom + 22 - row.top - 4} fill="transparent" />
+                            {reviewed.has(b.pos) && (
+                              <text x={x} y={row.staffBottom + 17} textAnchor="middle" fontSize={14} fontWeight={800} fill="#334155">
+                                ✓
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
+                    </>
+                  )}
                 />
               </div>
-              <Card className="!p-3">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500 mb-2">
-                  <span>COUNTS</span>
-                  <span className="text-emerald-600">{countSummary.match} as expected</span>
-                  <span className="text-rose-600">{countSummary.differ} different</span>
-                  <span className="text-amber-600">{countSummary.unsure} unsure (?)</span>
-                  <span>{countSummary.none} not said</span>
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {counts.map((c, i) => {
-                    const exp = take.info.counts[i];
-                    const tone =
-                      c.label === null
-                        ? "bg-slate-100 text-slate-400"
-                        : c.label === exp.label
-                        ? "bg-emerald-50 text-emerald-700"
-                        : c.label === "?"
-                        ? "bg-amber-50 text-amber-700"
-                        : "bg-rose-50 text-rose-700";
-                    return (
-                      <button
-                        key={i}
-                        type="button"
-                        title={`expected “${countDisplay(exp.label)}”`}
-                        className={`min-w-[2rem] rounded-lg px-1.5 py-0.5 text-sm font-bold ${tone}`}
-                        onClick={() => {
-                          seek(exp.t - 0.3);
-                          const ev = events.find((e) => e.type === "count" && c.t !== null && Math.abs(e.t - c.t) < 1e-6);
-                          setSelected(ev?.id ?? null);
-                        }}
-                      >
-                        {c.label === null ? "—" : countDisplay(c.label)}
-                      </button>
-                    );
-                  })}
-                </div>
-              </Card>
+
+              {!beats.length && (
+                <Card className="!p-4 text-slate-600">
+                  This take has nothing to check beat by beat (sung takes aren't labeled yet). You can still look at it on the timeline below.
+                </Card>
+              )}
+
+              {beat && here && (
+                <Card className="!p-4 flex flex-col gap-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="text-lg font-black capitalize">{beatName(beat.pos, measureLength(ts), beatLength(ts))}</div>
+                    <span className="text-sm text-slate-500">
+                      Beat {beatIdx + 1} of {beats.length}
+                      {reviewed.has(beat.pos) ? " · ✓ checked" : ""}
+                    </span>
+                    <div className="ml-auto flex gap-2">
+                      <Button variant="secondary" onClick={() => goTo(beatIdx - 1)} disabled={beatIdx === 0} className="!px-4 !py-2">
+                        ◀ Back
+                      </Button>
+                      <Button onClick={playBeat} variant="gold" className="!px-4 !py-2">
+                        ▶ Play this beat
+                      </Button>
+                    </div>
+                  </div>
+
+                  {beat.note && (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="text-sm text-slate-600">
+                        <b className="text-slate-800">👏 Clap</b> · The music has a note here.{" "}
+                        {here.clap ? `${sourceText(here.clap)} a clap, ${timingText(here.clap.t - beat.note.t)}.` : "No clap found."}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Choice wide on={!!here.clap} onClick={() => setClap(true)}>
+                          👏 Clapped
+                        </Choice>
+                        <Choice wide on={!here.clap} onClick={() => setClap(false)}>
+                          No clap
+                        </Choice>
+                      </div>
+                    </div>
+                  )}
+
+                  {beat.rest && (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="text-sm text-slate-600">
+                        <b className="text-slate-800">👇 Rest pulse</b> · The music has a rest here.{" "}
+                        {here.pulse ? `${sourceText(here.pulse)} a rest pulse.` : "No rest pulse found."}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Choice wide on={!!here.pulse} onClick={() => setPulse(true)}>
+                          👇 Pulsed
+                        </Choice>
+                        <Choice wide on={!here.pulse} onClick={() => setPulse(false)}>
+                          No pulse
+                        </Choice>
+                      </div>
+                    </div>
+                  )}
+
+                  {beat.count && (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="text-sm text-slate-600">
+                        <b className="text-slate-800">🗣️ Count</b> · Should say “{wordDisplay(beat.count.label)}”.{" "}
+                        {here.word
+                          ? here.word.label === "?"
+                            ? "Heard a voice here but couldn't tell the word."
+                            : `${sourceText(here.word)} “${wordDisplay(here.word.label ?? "?")}”.`
+                          : "Nothing heard."}{" "}
+                        What did the student say?
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {words.map((w) => (
+                          <Choice key={w} on={here.word?.label === w} onClick={() => setWord(w)} title={w === beat.count!.label ? "the expected word" : undefined}>
+                            {wordDisplay(w)}
+                            {w === beat.count!.label ? " ★" : ""}
+                          </Choice>
+                        ))}
+                        <Choice on={here.word?.label === "?"} onClick={() => setWord("?")}>
+                          ? Can't tell
+                        </Choice>
+                        <Choice on={!here.word} onClick={() => setWord(null)}>
+                          Nothing said
+                        </Choice>
+                      </div>
+                      <div className="text-xs text-slate-500">★ = what the music says</div>
+                    </div>
+                  )}
+
+                  {here.extras.length > 0 && (
+                    <div className="flex flex-col gap-1.5 border-t border-slate-200 pt-3">
+                      <div className="text-sm font-bold text-slate-800">Also found near this beat (not in the music)</div>
+                      {here.extras.map((e) => (
+                        <div key={e.id} className="flex flex-wrap items-center gap-2 text-sm">
+                          <span>
+                            {TYPE_NAME[e.type]}
+                            {e.label ? ` “${wordDisplay(e.label)}”` : ""} · {sourceText(e).toLowerCase()} it
+                          </span>
+                          <Choice
+                            on={e.source === "human"}
+                            onClick={() => {
+                              change((ev) => ev.map((x) => (x.id === e.id ? human(x) : x)));
+                              markReviewed(beat.pos);
+                            }}
+                          >
+                            Keep: it happened
+                          </Choice>
+                          <Choice
+                            on={false}
+                            onClick={() => {
+                              removeEvent(e.id);
+                              markReviewed(beat.pos);
+                            }}
+                          >
+                            🗑 Remove: it didn't
+                          </Choice>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3 border-t border-slate-200 pt-3">
+                    <Button onClick={confirmAndNext} className="!px-6 !py-2.5">
+                      ✓ Looks right, next
+                    </Button>
+                    <span className="text-sm text-slate-600">
+                      {checked} of {beats.length} beats checked
+                    </span>
+                    <div className="h-2 flex-1 min-w-[80px] rounded-full bg-slate-200 overflow-hidden">
+                      <div className="h-full bg-slate-700" style={{ width: `${(checked / Math.max(1, beats.length)) * 100}%` }} />
+                    </div>
+                    {checked === beats.length && <span className="text-sm font-bold">All checked. Save when you're done 💾</span>}
+                  </div>
+                </Card>
+              )}
             </div>
           </div>
 
+          {/* Timeline, for fine-tuning timing */}
           <Card className="!p-3 flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  const m = mediaRef.current;
-                  if (!m) return;
-                  if (m.paused) m.play();
-                  else m.pause();
-                }}
-              >
-                {playing ? "Pause" : "Play"}
-              </Button>
-              {[0.25, 0.5, 1].map((r) => (
-                <Pill key={r} selected={rate === r} onClick={() => setRate(r)}>
-                  {r}×
-                </Pill>
+              <span className="text-sm font-bold text-slate-800 mr-1">Timeline</span>
+              <Choice on={tool === "select"} onClick={() => setTool("select")} title="Click a mark to select it; drag it to move it">
+                👆 Select / move
+              </Choice>
+              {(take.claps ? (["clap", "count", "pulse"] as EventType[]) : (["count"] as EventType[])).map((t) => (
+                <Choice key={t} on={tool === t} onClick={() => setTool(tool === t ? "select" : t)} title={`Then click the timeline where the ${t} happened`}>
+                  + Add {TYPE_NAME[t]}
+                </Choice>
               ))}
-              <span className="font-mono text-sm w-24 text-right">{fmt(Math.max(0, time))}</span>
-              {sel && (
-                <span className="text-sm">
-                  Selected <b>{sel.type}</b>
-                  {sel.label ? ` “${countDisplay(sel.label)}”` : ""} at {fmt(sel.t)} ({sel.source})
-                </span>
-              )}
+              <span className="mx-1 h-6 w-px bg-slate-300" />
+              <Choice on={false} onClick={() => setView((v) => ({ start: v.start + v.dur * 0.25, dur: Math.max(0.4, v.dur / 2) }))}>
+                🔍+ Zoom in
+              </Choice>
+              <Choice
+                on={false}
+                onClick={() => setView((v) => ({ start: Math.max(-1, v.start - v.dur / 2), dur: Math.min(duration + 2, v.dur * 2) }))}
+              >
+                🔍− Zoom out
+              </Choice>
+              <Choice on={false} onClick={() => setView({ start: -0.5, dur: duration + 1 })}>
+                Whole take
+              </Choice>
+              <span className="mx-1 h-6 w-px bg-slate-300" />
+              <Choice on={false} onClick={undoLast} title="Undo the last change">
+                ↶ Undo{undoCount ? "" : " (nothing yet)"}
+              </Choice>
             </div>
+            {tool !== "select" && (
+              <p className="text-sm font-semibold text-slate-700">
+                Click the timeline where the {TYPE_NAME[tool]} happened. (Press “👆 Select / move” to stop adding.)
+              </p>
+            )}
             <Timeline
               info={take.info}
               audio={take.audio}
@@ -545,19 +949,77 @@ const Labeler: React.FC = () => {
               time={time}
               view={view}
               duration={duration}
+              tool={tool}
+              band={band}
+              showClaps={take.claps}
               onView={setView}
               onSeek={seek}
               onSelect={setSelected}
               onMove={(id, t) => change((ev) => ev.map((x) => (x.id === id ? { ...x, t, source: "human" } : x)))}
-              onAdd={add}
+              onAdd={(type, t) => {
+                const e = addEvent(type, type === "clap" ? snap(t, take.onsets, 0.05) : t, type === "count" ? "?" : undefined);
+                setSelected(e.id);
+                setTool("select");
+              }}
             />
-            <p className="text-xs text-slate-500 leading-relaxed">
-              <b>Space</b> play/pause · <b>←/→</b> step 50 ms (<b>Shift</b> 10 ms; <b>Alt</b> moves the selected event) ·
-              click a lane to seek / select · drag events to move · <b>double-click</b> a lane to add · <b>c</b>/<b>w</b>/<b>p</b>{" "}
-              add clap / count / pulse at the playhead · with a count selected: <b>1–9</b> numbers, <b>n</b> “&”, <b>e</b>, <b>a</b>
-              /<b>u</b> “a”, <b>?</b> unsure · <b>Delete</b> remove · <b>Ctrl+Z</b> undo · wheel zoom, <b>Shift</b>+wheel or drag
-              the ruler to pan, <b>[ ]</b> zoom
-            </p>
+            {sel ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span>
+                  Selected: <b>{TYPE_NAME[sel.type]}</b>
+                  {sel.label ? ` “${wordDisplay(sel.label)}”` : ""} ({sourceText(sel).toLowerCase()} it)
+                </span>
+                <Choice on={false} onClick={() => change((ev) => ev.map((x) => (x.id === sel.id ? { ...x, t: x.t - 0.01, source: "human" } : x)))}>
+                  ◀ 10 ms earlier
+                </Choice>
+                <Choice on={false} onClick={() => change((ev) => ev.map((x) => (x.id === sel.id ? { ...x, t: x.t + 0.01, source: "human" } : x)))}>
+                  10 ms later ▶
+                </Choice>
+                {sel.type === "count" &&
+                  [...words, "?"].map((w) => (
+                    <Choice key={w} on={sel.label === w} onClick={() => change((ev) => ev.map((x) => (x.id === sel.id ? { ...x, label: w, source: "human" } : x)))}>
+                      {wordDisplay(w)}
+                    </Choice>
+                  ))}
+                <Choice
+                  on={false}
+                  onClick={() => {
+                    removeEvent(sel.id);
+                    setSelected(null);
+                  }}
+                >
+                  🗑 Remove
+                </Choice>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-600">
+                ○ hollow mark = found by the app · ● filled mark = checked by you · dashed line = where the music says it goes · the shaded band is
+                the beat you're checking. Click a mark to select it, drag it to move it. Scroll on the timeline to zoom; drag the top strip to slide
+                along.
+              </p>
+            )}
+            <details className="text-sm text-slate-600">
+              <summary className="cursor-pointer font-semibold">Keyboard shortcuts (optional)</summary>
+              <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+                <li>
+                  <b>Space</b>: play this beat / pause
+                </li>
+                <li>
+                  <b>← →</b>: previous / next beat
+                </li>
+                <li>
+                  <b>Enter</b>: looks right, next
+                </li>
+                <li>
+                  <b>1–9</b>, <b>e</b>, <b>n</b> (&amp;), <b>u</b> (uh), <b>l</b> (la), <b>i</b> (li): the word said on this beat
+                </li>
+                <li>
+                  <b>Delete</b>: remove the selected mark
+                </li>
+                <li>
+                  <b>Ctrl+Z</b>: undo
+                </li>
+              </ul>
+            </details>
           </Card>
         </>
       )}

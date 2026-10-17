@@ -25,8 +25,13 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "ml:dataset": "sh ml/build.sh && node ml/dataset.js ml/captures",
-    "ml:train": "python ml/train.py"
+    "ml:dataset": "sh ml/build.sh && node ml/dataset.js dataset ml/captures",
+    "ml:train": "python ml/train.py",
+    "ml:sounds": "sh ml/build.sh && node ml/sound-bank.js dataset/chris_fauries",
+    "ml:synth": "sh ml/build.sh && node ml/synth.js",
+    "ml:audio-dataset": "sh ml/build.sh && node ml/audio-dataset.js dataset ml/captures",
+    "ml:train-audio": "python ml/train_audio.py",
+    "ml:measure-voice": "sh ml/build.sh && node ml/measure-voice.js dataset/chris_fauries"
   },
   "eslintConfig": {
     "extends": [

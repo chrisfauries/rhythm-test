@@ -4,7 +4,7 @@ import { Recording } from "../audio/Recording";
 import { sungOnsets, voiceFrames, voicedSegments, voiceOnsetNear, voiceRuns } from "../audio/voice";
 import { Card } from "../components/ui";
 import { json, parseWav, readZip } from "../labeler/files";
-import { Activity, activityInfo } from "../music/activity";
+import { activityInfo, activityOfSettings } from "../music/activity";
 import { customExercise, Exercise, findExercise } from "../music/book";
 import ResultsScreen from "../screens/ResultsScreen";
 import { TakeOutcome } from "../session/TakeRunner";
@@ -12,9 +12,6 @@ import { TakeOutcome } from "../session/TakeRunner";
 // Replay (?results): open a capture or debug zip and see its results screen,
 // re-graded with the current code from what the sensors recorded. Useful for
 // reviewing old takes and for checking grading changes against real takes.
-
-const activityOf = (settings: any): Activity =>
-  settings.activity ?? (settings.useSpeech === false ? "clap" : settings.countMode === "all" ? "clap-count-all" : "clap-count-notes");
 
 const load = async (file: File): Promise<{ exercise: Exercise; outcome: TakeOutcome }> => {
   const files = await readZip(file);
@@ -25,7 +22,7 @@ const load = async (file: File): Promise<{ exercise: Exercise; outcome: TakeOutc
   const recording = new Recording(sampleRate, data.length / sampleRate + 1);
   recording.append(data, t0);
   const exercise = findExercise(diag.exercise.id)?.exercise ?? customExercise(diag.exercise.source, diag.exercise.timeSig);
-  const activity = activityOf(diag.settings);
+  const activity = activityOfSettings(diag.settings);
   const info = activityInfo(activity);
   const speech: number = diag.offsets.speech;
   const vf = voiceFrames(data, sampleRate, t0);

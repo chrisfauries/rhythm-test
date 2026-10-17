@@ -13,8 +13,11 @@ export interface LabelEvent {
   t: number;
   /** Count word ("one", "and", "e", "a", ... or "?" when unsure). */
   label?: string;
-  /** Who put it there: the app's detectors, the count model, or a person. */
-  source: "app" | "model" | "human";
+  /**
+   * Who put it there: the app's detectors, the count model, a person, or the
+   * synthetic-take generator (ml/synth.js), which knows exactly where it put every sound.
+   */
+  source: "app" | "model" | "human" | "synthetic";
 }
 
 export interface ExpectedCount {
@@ -32,6 +35,8 @@ export interface LabelsFile {
   events: LabelEvent[];
   /** Per expected count: the word labeled there, or null if nothing was said. */
   counts: { pos: number; label: string | null; t: number | null }[];
+  /** Beat positions a person has checked in the labeler (for picking up where they left off). */
+  reviewed?: number[];
 }
 
 export const COUNT_KEYS: Record<string, string> = {
@@ -48,8 +53,8 @@ export const COUNT_KEYS: Record<string, string> = {
   e: "e",
   a: "a",
   u: "a",
-  t: "trip",
-  l: "let",
+  l: "la",
+  i: "li",
   "?": "?",
 };
 
@@ -135,11 +140,12 @@ export const countsFromEvents = (events: LabelEvent[], info: TakeInfo) => {
   });
 };
 
-export const labelsFile = (take: string, events: LabelEvent[], info: TakeInfo): LabelsFile => ({
+export const labelsFile = (take: string, events: LabelEvent[], info: TakeInfo, reviewed: number[] = []): LabelsFile => ({
   format: "rhythm-tester-labels",
   version: 1,
   take,
   savedAt: new Date().toISOString(),
   events: [...events].sort((a, b) => a.t - b.t),
   counts: countsFromEvents(events, info),
+  reviewed: [...reviewed].sort((a, b) => a - b),
 });

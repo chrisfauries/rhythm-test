@@ -1,4 +1,4 @@
-// Minimal .zip reader (stored or deflated entries) for capture/debug zips.
+// Minimal .zip reader (stored or deflated entries) for capture/debug zips, and WAV read/write.
 const fs = require("fs");
 const zlib = require("zlib");
 
@@ -50,4 +50,23 @@ exports.wavSamples = (b) => {
     off += 8 + size + (size % 2);
   }
   throw new Error("no data chunk");
+};
+
+/** A 16-bit mono WAV file from float samples. */
+exports.wavBytes = (data, sr) => {
+  const b = Buffer.alloc(44 + data.length * 2);
+  b.write("RIFF", 0);
+  b.writeUInt32LE(36 + data.length * 2, 4);
+  b.write("WAVEfmt ", 8);
+  b.writeUInt32LE(16, 16);
+  b.writeUInt16LE(1, 20);
+  b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(sr, 24);
+  b.writeUInt32LE(sr * 2, 28);
+  b.writeUInt16LE(2, 32);
+  b.writeUInt16LE(16, 34);
+  b.write("data", 36);
+  b.writeUInt32LE(data.length * 2, 40);
+  for (let i = 0; i < data.length; i++) b.writeInt16LE(Math.round(Math.max(-1, Math.min(1, data[i])) * 32767), 44 + i * 2);
+  return b;
 };
