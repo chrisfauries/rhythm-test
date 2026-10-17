@@ -21,3 +21,10 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# ML: captures are student recordings (keep them in Google Drive, not git);
+# datasets and compiled helpers are generated.
+/ml/captures
+/ml/data
+/ml/.build
+__pycache__/

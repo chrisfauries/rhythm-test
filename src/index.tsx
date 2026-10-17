@@ -2,14 +2,20 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
+import Labeler from './labeler/Labeler';
+import Replay from './replay/Replay';
 import reportWebVitals from './reportWebVitals';
+
+// ?label opens the labeler, ?results replays a saved take; otherwise the app.
+const params = new URLSearchParams(window.location.search);
+const PAGE = params.has('label') ? 'label' : params.has('results') ? 'results' : 'app';
 
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
 );
 root.render(
   <React.StrictMode>
-    <App />
+    {PAGE === 'label' ? <Labeler /> : PAGE === 'results' ? <Replay /> : <App />}
   </React.StrictMode>
 );
 

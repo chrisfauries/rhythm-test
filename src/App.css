@@ -1,3 +1,8 @@
+
 .App {
-  text-align: center;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  /* Removed the hardcoded dark background and white text.
+     This allows Tailwind's light/dark modes to flow through from the body. */
 }

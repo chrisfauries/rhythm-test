@@ -1,118 +1,163 @@
+import React, { useCallback, useEffect, useState } from "react";
 import "./App.css";
-import Metronome from "./Metronome";
-import Notation from "./Notation";
-import { useState, useCallback, useRef, useEffect } from "react";
-import SpeechRecognition from "./SpeechRecognition";
-import MeydaClapDetector from "./MeydaDetector";
-import HandDetector, { HandAction } from "./HandDetector";
-import { quartersAndEighths } from "./data/examples/quarters-and-eigths";
-import { quartersEasy } from "./data/examples/quarters-easy";
+import { Exercise, findExercise, nextExercise, PAGES } from "./music/book";
+import CalibrateScreen from "./screens/CalibrateScreen";
+import HistoryPanel from "./screens/HistoryPanel";
+import PerformScreen from "./screens/PerformScreen";
+import ResultsScreen from "./screens/ResultsScreen";
+import SettingsPanel from "./screens/SettingsPanel";
+import SetupScreen from "./screens/SetupScreen";
+import { TakeOutcome } from "./session/TakeRunner";
+import { useDevices } from "./state/devices";
+import { useHistory } from "./state/history";
+import { useSettings } from "./state/settings";
+import { handTracker } from "./video/HandTracker";
 
-const getCountOffText = (beat: number) => {
-  switch (beat) {
-    case -4:
-      return "One";
-    case -3:
-      return "Two";
-    case -2:
-      return "Ready";
-    case -1:
-      return "Go!";
-    default:
-      return "";
-  }
-};
-
-interface NoteTiming {
-  beat: number;
-  time: number;
+enum PHASE {
+  SETUP,
+  PERFORM,
+  RESULTS,
+  CALIBRATE,
 }
 
+// The chosen line and tempo live in the URL (?line=7.5-C&tempo=80) so a
+// teacher can bookmark or share a specific assignment.
+// Read once at load, before the app rewrites the URL.
+const URL_PARAMS = new URLSearchParams(window.location.search);
+
+const initialExercise = (): Exercise => {
+  const id = URL_PARAMS.get("line");
+  return (id && findExercise(id)?.exercise) || PAGES[0].exercises[0];
+};
+
 function App() {
-  const [beat, setBeat] = useState(-5);
-  const beatRef = useRef<number>(-5);
-  const incrementBeat = useCallback(() => {
-    let hasCalled = false;
-    setBeat((x) => {
-      !hasCalled && x + 1 >= 0 && updateTiming(x + 1);
-      hasCalled = true;
-      beatRef.current = x + 1;
-      return x + 1;
+  const [settings, update] = useSettings();
+  const devices = useDevices(settings);
+  const history = useHistory();
+  const [phase, setPhase] = useState(PHASE.SETUP);
+  const [exercise, setExercise] = useState<Exercise>(initialExercise);
+  const [outcome, setOutcome] = useState<TakeOutcome | null>(null);
+  const [takeKey, setTakeKey] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    const tempo = URL_PARAMS.get("tempo");
+    if (tempo && +tempo >= 40 && +tempo <= 200) update({ tempo: +tempo });
+  }, [update]);
+
+  useEffect(() => {
+    if (exercise.id === "custom") return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("line", exercise.id);
+    params.set("tempo", String(settings.tempo));
+    window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+  }, [exercise, settings.tempo]);
+
+  useEffect(() => {
+    handTracker.tuning = settings.handTuning;
+  }, [settings.handTuning]);
+
+  const replaceOutcome = useCallback((next: TakeOutcome | null) => {
+    setOutcome((prev) => {
+      prev?.snapshots.forEach((s) => s.bitmap.close());
+      return next;
     });
   }, []);
 
-  const resetBeat = useCallback(() => {
-    setBeat(-5);
-    beatRef.current = -5;
-  }, []);
-
-  const [transcript, setTranscript] = useState<string>("");
-  const resetTranscript = useCallback(() => {
-    setTranscript("");
-  }, []);
-
-  const [isStarted, setIsStarted] = useState<boolean>(false);
-
-  const actualNoteTimings = useRef<Array<NoteTiming>>([]);
-  const clappedTimings = useRef<Array<NoteTiming>>([]);
-  const handPositionTimings = useRef<Array<HandAction>>([]);
-
-  const registerClappedTiming = useCallback(() => {
-    console.log("registering clapped timing", beatRef.current);
-    if (beatRef.current < 0) return;
-    const now = Math.round(((Date.now() / 1000) % 1000) * 100) / 100;
-    clappedTimings.current.push({ beat: beatRef.current, time: now });
-  }, []);
-
-  useEffect(() => {
-    if (!isStarted) {
-      console.log(`Acutal note timings:`, actualNoteTimings.current);
-      actualNoteTimings.current = [];
-      console.log(`clapped note timings:`, clappedTimings.current);
-      clappedTimings.current = [];
-    }
-  }, [isStarted]);
-
-  const updateTiming = (beat: number) => {
-    const now = Math.round(((Date.now() / 1000) % 1000) * 100) / 100;
-    actualNoteTimings.current.push({ beat: beat, time: now });
+  const start = () => {
+    replaceOutcome(null);
+    setTakeKey((k) => k + 1);
+    setPhase(PHASE.PERFORM);
   };
 
+  const finished = (o: TakeOutcome) => {
+    replaceOutcome(o);
+    const s = o.result.summary;
+    history.add({
+      id: `${Date.now()}`,
+      date: new Date().toISOString(),
+      student: settings.studentName.trim(),
+      exerciseId: exercise.id,
+      title: exercise.id === "custom" ? `Custom: ${exercise.source}` : exercise.title,
+      bpm: settings.tempo,
+      overall: s.overall,
+      clap: s.clapScore,
+      count: s.countScore,
+      hold: s.holdScore,
+      meanOffsetMs: s.meanOffsetMs,
+      tendency: s.tendency,
+    });
+    setPhase(PHASE.RESULTS);
+  };
+
+  const next = exercise.id === "custom" ? null : nextExercise(exercise.id);
+
+  let screen: React.ReactNode = null;
+  switch (phase) {
+    case PHASE.SETUP:
+      screen = (
+        <SetupScreen
+          settings={settings}
+          update={update}
+          devices={devices}
+          exercise={exercise}
+          onSelectExercise={setExercise}
+          onStart={start}
+          onCalibrate={() => setPhase(PHASE.CALIBRATE)}
+          onOpenSettings={() => setShowSettings(true)}
+          onOpenHistory={() => setShowHistory(true)}
+        />
+      );
+      break;
+    case PHASE.PERFORM:
+      screen = (
+        <PerformScreen
+          key={takeKey}
+          exercise={exercise}
+          settings={settings}
+          onFinished={finished}
+          onCancel={() => setPhase(PHASE.SETUP)}
+        />
+      );
+      break;
+    case PHASE.RESULTS:
+      screen = outcome && (
+        <ResultsScreen
+          exercise={exercise}
+          outcome={outcome}
+          tempo={settings.tempo}
+          onRetry={start}
+          onNext={
+            next
+              ? () => {
+                  setExercise(next);
+                  start();
+                }
+              : null
+          }
+          onChooseLine={() => setPhase(PHASE.SETUP)}
+        />
+      );
+      break;
+    case PHASE.CALIBRATE:
+      screen = <CalibrateScreen settings={settings} onSave={update} onClose={() => setPhase(PHASE.SETUP)} />;
+      break;
+  }
+
   return (
-    <div className="App">
-      <div className="flex justify-center mt-8">
-        <Notation beat={beat} notesToRender={quartersEasy} />
-      </div>
-
-      <button
-        className="w-full py-4 px-4 rounded-xl text-xl font-semibold text-white transition-all duration-200 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-opacity-50
-                        bg-blue-500 hover:bg-blue-600 focus:ring-blue-400"
-        onClick={() => {
-          setIsStarted((x) => !x);
-        }}
-      >
-        {isStarted ? "Stop" : "Start"}
-      </button>
-
-      {beat < 0 && <h2 className="bg-gray-100 dark:bg-gray-900 text-6xl text-white pt-16">{getCountOffText(beat)}</h2>}
-
-      <div className="flex justify-around items-center space-x-4 bg-gray-100 dark:bg-gray-900 min-h-screen">
-        <Metronome
-          incrementBeat={incrementBeat}
-          resetBeat={resetBeat}
-          isPlaying={isStarted}
+    <div className="App flex flex-col w-full min-h-screen">
+      {screen}
+      {showSettings && (
+        <SettingsPanel
+          settings={settings}
+          update={update}
+          onClose={() => setShowSettings(false)}
         />
-        <SpeechRecognition
-          transcript={transcript}
-          setTranscript={setTranscript}
-          isListening={isStarted}
-        />
-        <MeydaClapDetector
-          isListening={isStarted}
-          registerClappedTiming={registerClappedTiming}
-        />
-        <HandDetector handPositions={handPositionTimings.current} />
-      </div>
+      )}
+      {showHistory && (
+        <HistoryPanel records={history.records} onClear={history.clear} onClose={() => setShowHistory(false)} />
+      )}
     </div>
   );
 }
