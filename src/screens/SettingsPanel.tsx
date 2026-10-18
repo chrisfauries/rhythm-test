@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { listMicrophones } from "../audio/AudioEngine";
+import { audioEngine, listMicrophones } from "../audio/AudioEngine";
 import { CameraPreview } from "../components/LiveWidgets";
 import { Modal, Pill } from "../components/ui";
+import { forgetDelays, learnedMicOffset, MIN_TAKES } from "../state/latency";
 import { DEFAULT_SETTINGS, Settings } from "../state/settings";
 import { openPage, SAVED_TOOLS, saveTools, TOOLS, URL_OVERRIDES } from "../state/tools";
 import { DEFAULT_HAND_TUNING, handTracker } from "../video/HandTracker";
@@ -37,6 +38,7 @@ const fmtMs = (s: number | null) => (s === null ? "default" : `${Math.round(s * 
 
 const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
+  const [learned, setLearned] = useState(() => learnedMicOffset(audioEngine.deviceLabel));
   useEffect(() => {
     listMicrophones()
       .then(setMics)
@@ -106,19 +108,23 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
               </Pill>
             ))}
           </Row>
-          <Row label="Calibration" hint="Measured delays for this computer.">
+          <Row
+            label="Timing"
+            hint="The delays on this computer. Without calibration the app learns them from your takes (and measures the camera's on every take); calibration is only needed for Bluetooth or unusual setups."
+          >
             <span className="text-xs font-mono text-slate-500">
-              claps {fmtMs(settings.micOffset)} · counts {fmtMs(settings.speechOffset)} · camera {fmtMs(settings.videoOffset)}
+              {settings.micOffset !== null
+                ? `calibrated: claps ${fmtMs(settings.micOffset)} · counts ${fmtMs(settings.speechOffset)} · camera ${fmtMs(settings.videoOffset)}`
+                : learned.offset !== null
+                  ? `learned from ${learned.takes} takes: ${fmtMs(learned.offset)}`
+                  : `learning (${learned.takes} of ${MIN_TAKES} takes)`}
             </span>
             <Pill
-              onClick={() =>
-                update({
-                  micOffset: null,
-                  speechOffset: null,
-                  videoOffset: null,
-                  clapBias: null,
-                })
-              }
+              onClick={() => {
+                update({ micOffset: null, speechOffset: null, videoOffset: null, clapBias: null });
+                forgetDelays();
+                setLearned(learnedMicOffset(audioEngine.deviceLabel));
+              }}
             >
               Reset
             </Pill>
@@ -222,10 +228,11 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
           </Row>
           <Row
             label="Other pages"
-            hint="Open in a new tab. Labeler: mark what really happened in a capture. Replay: open a capture or debug zip and see its results, re-graded."
+            hint="Open in a new tab. Labeler: mark what really happened in a capture. Replay: open a capture or debug zip and see its results, re-graded. Collect: a guided session recording one person's takes and sound clips for training."
           >
             <Pill onClick={() => openPage("label")}>Labeler</Pill>
             <Pill onClick={() => openPage("results")}>Replay a take</Pill>
+            <Pill onClick={() => openPage("collect")}>Collect a person</Pill>
           </Row>
 
           <div className="mt-6">

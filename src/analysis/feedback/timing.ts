@@ -350,7 +350,9 @@ export const timing = (ctx: Ctx): { evidence: Evidence[]; timing: Timing } => {
       .filter(
         ({ n }) => (n.status === "early" || n.status === "late") && Math.sign(n.offsetMs!) === Math.sign(med) && n.pos < cutPos - 1e-6,
       );
-    if (Math.abs(med) >= 35 && side >= 0.7 * ys.length && off.length) {
+    // (With only the browser's latency estimate, a small steady offset may be the device's, not the student's.)
+    const steadyMs = input.latencyKnown === false ? 80 : 35;
+    if (Math.abs(med) >= steadyMs && side >= 0.7 * ys.length && off.length) {
       const early = med < 0;
       const what = activity.sing ? "Your notes" : activity.claps ? "Your claps" : "Your counts";
       evidence.push({

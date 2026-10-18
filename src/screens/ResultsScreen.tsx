@@ -104,6 +104,7 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
         activity,
         bpm: tempo,
         metronome: outcome.raw.debug?.settings?.metronomeDuringLine !== false,
+        latencyKnown: outcome.raw.debug?.offsets?.micSource !== "browser",
       }),
     [result, line, activity, tempo, outcome],
   );

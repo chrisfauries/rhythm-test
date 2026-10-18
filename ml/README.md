@@ -6,6 +6,16 @@ report events: which count word was said, and later claps and hand motions.
 
 ## The workflow
 
+**Collecting from a new person:** Settings → Tools → **Collect a person** (`?collect`). A guided session:
+the 25 planned lines one at a time (`src/collect/plan.ts`: every activity, rhythms from quarters to
+sixteenths, triplets, ties, 3/4 to 6/8, a spread of tempos), each practiced and then recorded, and
+saved as an ordinary capture zip only when the person says it was played as written; then about 50
+**sound clips** (single counts, phrases like "1 e & uh", held counts, claps, sung "Da"s), said on the
+click and saved as one zip: `manifest.json` (person, device, every prompt and clip with its labels,
+where the sound starts and where each syllable should be), `clips/<kind>/<prompt>_<n>.wav`, and
+`raw/<prompt>.wav` (each prompt's whole recording, to re-cut). The clips are for building synthetic
+takes from that person's own sounds (not wired into `sound-bank.js` yet: TODO.md).
+
 1. **Capture.** Open the app with `?training` (e.g. `http://localhost:3000/?training`). After each take,
    press **● Capture** and fill in the dialog. You get one zip with the mic audio, the metronome, the
    camera video, every detection, and the app's grading. Put the zips in `ml/captures/`. They're kept

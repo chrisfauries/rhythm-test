@@ -53,7 +53,10 @@
 - Labeler: label sung "Da"s (sung takes have nothing to check yet), holds and forward motion.
 - A/B: a test suite that runs the rule-based and model approaches over labeled captures and reports accuracy by rhythm type, setting and mic. Then split the app so both can run side by side.
 - **Synthetic takes from other people's real takes** (user idea, 2026-10-17), once there are takes from 5–6 people besides Chris. Cut their labeled words, "Da"s and claps into sound banks, the way `ml/sound-bank.js` does with the TTS voices, and let `ml/synth.js` build new lines from them. Real voices, real rooms and real mics would replace or add to the speech-engine voices.
-  - Keep one or two of those people out of the synthetic sounds as well as training, so the test stays honest.
+  - Plan (user, 2026-10-18): 20-30 takes from each of 3-4 adults and an 8th grader (the 25-take set in the chat of 2026-10-18), then 3-4x as many synthetic takes per person from their own clips, on lines and tempos they didn't record.
+  - Built (2026-10-18): the `?collect` page (Settings → Tools → Collect a person) records the 25 guided takes and a clips zip per person. Still to do: teach `ml/sound-bank.js` to read the clips zips (format in ml/README.md), and `ml/synth.js` to build takes from one person's bank.
+  - Cutting clips: claps are clean; blended counts ("oneanna") and legato singing aren't, so take words from takes where the counts are clearly apart, with exact cut points from a labeled take or two per person and the model for the rest.
+  - Keep one or two of those people out of the synthetic sounds as well as training, so the test stays honest. (Suggested: the 8th grader and one adult.)
   - Measure their counting and singing with `ml/measure-voice.js` too; Chris's style may not be typical.
 - **Synthetic video from real captures** (user idea, 2026-10-17), for when there is a video model. Swap the person (body or face swap) and the background in real takes, and keep the original labels, since the motion and timing are unchanged.
   - Use invented, AI-generated people, not celebrities. Real people's likenesses raise rights and consent issues.

@@ -34,6 +34,12 @@ export interface FeedbackInput {
   bpm: number;
   /** Was the metronome clicking during the line (not just the count-in)? */
   metronome: boolean;
+  /**
+   * Is the device's delay known (calibrated, or learned from earlier takes)?
+   * When it's only the browser's estimate, "always a little early/late" needs
+   * a bigger offset before it's reported. Default: known.
+   */
+  latencyKnown?: boolean;
 }
 
 /**

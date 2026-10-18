@@ -19,6 +19,7 @@ const take = (
     frames?: TakeFrame[] | null;
     voicedSpans?: [number, number][];
     metronome?: boolean;
+    latencyKnown?: boolean;
     bpm?: number;
   } = {},
 ) => {
@@ -42,7 +43,14 @@ const take = (
     frames: opts.frames ?? null,
     voicedSpans: opts.voicedSpans,
   });
-  return feedback({ result, line, activity: activityInfo(activity), bpm, metronome: opts.metronome ?? true });
+  return feedback({
+    result,
+    line,
+    activity: activityInfo(activity),
+    bpm,
+    metronome: opts.metronome ?? true,
+    latencyKnown: opts.latencyKnown,
+  });
 };
 
 /** Every count of the line said on time, then changed by `edit`. */
@@ -115,6 +123,13 @@ describe("feedback", () => {
     const f = take(QUARTERS, { claps: (t) => t - 0.09 });
     expect(f.top.kind).toBe("early");
     expect(f.top.text).toMatch(/about 90 ms/);
+  });
+
+  it("doesn't blame a small steady offset on the student while the device's delay is only estimated", () => {
+    expect(take(QUARTERS, { claps: (t) => t - 0.075 }).top.kind).toBe("early");
+    expect(take(QUARTERS, { claps: (t) => t - 0.075, latencyKnown: false }).top.kind).not.toBe("early");
+    // A big one is still the student's.
+    expect(take(QUARTERS, { claps: (t) => t - 0.12, latencyKnown: false }).top.kind).toBe("early");
   });
 
   it("names the figure that keeps going wrong", () => {

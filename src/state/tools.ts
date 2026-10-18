@@ -50,5 +50,5 @@ export const saveTools = (patch: Partial<Tools>) => {
   window.location.reload();
 };
 
-/** Opens another page of the app (?label, ?results) in a new tab. */
-export const openPage = (page: "label" | "results") => window.open(`${window.location.pathname}?${page}`, "_blank");
+/** Opens another page of the app (?label, ?results, ?collect) in a new tab. */
+export const openPage = (page: "label" | "results" | "collect") => window.open(`${window.location.pathname}?${page}`, "_blank");

@@ -13,8 +13,10 @@ import { COUNT_MODEL_RULE, USE_AUDIO_MODEL, USE_COUNT_MODEL } from "../ml/flags"
 import { Line, lineBeats } from "../music/rhythm";
 import { CountSession, HeardWord, VoskEvent } from "../speech/CountRecognizer";
 import { refineWordTimes } from "../speech/wordTiming";
+import { learnedMicOffset, recordTakeDelay, takeDelay } from "../state/latency";
 import { Settings } from "../state/settings";
 import { TRAINING } from "../training/mode";
+import { cameraLag } from "../video/cameraLag";
 import { HandFrame, HandSnapshot, handTracker, keepSnapshotsNear } from "../video/HandTracker";
 
 export interface TakeTiming {
@@ -52,6 +54,10 @@ export interface TakeDebug {
     video: number;
     /** Which offsets came from calibration (vs. defaults). */
     calibrated: { mic: boolean; speech: boolean; video: boolean };
+    /** Where the mic delay came from: calibration, learned from earlier takes, or the browser's estimate. */
+    micSource?: "calibrated" | "learned" | "browser";
+    /** The camera delay measured on this take (hands meeting vs claps heard), if it could be. */
+    videoMeasured?: { lag: number; pairs: number } | null;
   };
   voicedSegments: VoicedSegment[];
   /** Looser voicing runs (counts under claps, sustained singing). */
@@ -178,8 +184,23 @@ export class TakeRunner {
     this.done = new Promise((resolve) => (this.resolveDone = resolve));
   }
 
+  /**
+   * The microphone delay for this take: calibration if it was done, else the
+   * one learned from earlier takes on this device (state/latency.ts), else the
+   * browser's own estimate. Fixed when the take starts.
+   */
+  private delay: { value: number; source: "calibrated" | "learned" | "browser" } | null = null;
   get micOffset() {
-    return this.settings.micOffset ?? audioEngine.defaultMicOffset;
+    if (!this.delay) {
+      const learned = learnedMicOffset(audioEngine.deviceLabel).offset;
+      this.delay =
+        this.settings.micOffset !== null
+          ? { value: this.settings.micOffset, source: "calibrated" }
+          : learned !== null
+            ? { value: learned, source: "learned" }
+            : { value: audioEngine.defaultMicOffset, source: "browser" };
+    }
+    return this.delay.value;
   }
 
   start() {
@@ -341,7 +362,6 @@ export class TakeRunner {
     // Word times are now acoustic (same path as claps), plus a small allowance
     // for where a syllable's beat sits relative to its vowel onset.
     const speechOff = this.settings.speechOffset ?? micOff + 0.02;
-    const videoOff = this.settings.videoOffset ?? 0;
 
     // The audio model grades what the mic heard; without it (?model=rules, or
     // it failed to load) the clap detector, voicing rules and Vosk do.
@@ -352,6 +372,9 @@ export class TakeRunner {
       : null;
 
     const claps = fromModel ? fromModel.input.claps : this.candidates.filter((c) => c.isClap && !c.gated).map((c) => c.time - micOff);
+    // The camera's delay, measured on this take when there are enough claps it also saw.
+    const videoMeasured = recording && info.claps ? cameraLag(recording.frames, claps) : null;
+    const videoOff = videoMeasured?.lag ?? this.settings.videoOffset ?? 0;
     const takeWords: TakeWord[] | null =
       fromModel && info.countMode
         ? fromModel.input.words
@@ -421,6 +444,15 @@ export class TakeRunner {
             : runs.map((r): [number, number] => [r.start - speechOff, r.end - speechOff]),
     });
 
+    // Learn this device's delay from a clean clapping take (unless it was calibrated).
+    if (this.delay?.source !== "calibrated" && info.claps) {
+      const offsets = result.notes
+        .filter((n) => ["on-time", "early", "late"].includes(n.status) && n.offsetMs !== undefined)
+        .map((n) => n.offsetMs!);
+      const d = takeDelay(micOff, offsets, result.notes.length);
+      if (d !== null) recordTakeDelay(audioEngine.deviceLabel, d);
+    }
+
     let snapshots: HandSnapshot[] = [];
     if (recording) {
       const corrected = recording.snapshots.map((s) => ({
@@ -456,6 +488,8 @@ export class TakeRunner {
           speech: this.settings.speechOffset !== null,
           video: this.settings.videoOffset !== null,
         },
+        micSource: this.delay?.source,
+        videoMeasured,
       },
       voicedSegments: segments,
       voiceRuns: runs,

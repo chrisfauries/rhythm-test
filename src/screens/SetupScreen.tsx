@@ -7,7 +7,9 @@ import { ACTIVITIES, activityInfo } from "../music/activity";
 import { customExercise, Exercise, PAGES } from "../music/book";
 import { RhythmParseError } from "../music/rhythm";
 import { ModelStatus } from "../speech/voskModel";
+import { audioEngine } from "../audio/AudioEngine";
 import { Devices } from "../state/devices";
+import { calibrationReason, learnedMicOffset, MIN_TAKES } from "../state/latency";
 import { Settings } from "../state/settings";
 
 interface Props {
@@ -41,8 +43,8 @@ const SetupScreen: React.FC<Props> = ({
   const [customError, setCustomError] = useState<string | null>(null);
 
   const page = useMemo(
-    () => (exercise && !customMode ? PAGES.find((p) => p.id === exercise.pageId) ?? null : null),
-    [exercise, customMode]
+    () => (exercise && !customMode ? (PAGES.find((p) => p.id === exercise.pageId) ?? null) : null),
+    [exercise, customMode],
   );
 
   const applyCustom = (source: string, ts: string) => {
@@ -61,24 +63,24 @@ const SetupScreen: React.FC<Props> = ({
   const camTone: StatusTone = !settings.useCamera
     ? "idle"
     : devices.camera === "on"
-    ? "ok"
-    : devices.camera === "error"
-    ? "error"
-    : devices.camera === "starting"
-    ? "busy"
-    : "idle";
+      ? "ok"
+      : devices.camera === "error"
+        ? "error"
+        : devices.camera === "starting"
+          ? "busy"
+          : "idle";
   const ms = devices.model.status;
   const counting = activityInfo(settings.activity).countMode !== null;
-  const modelTone: StatusTone =
-    ms === ModelStatus.READY
-    ? "ok"
-    : ms === ModelStatus.ERROR
-    ? "error"
-    : "busy";
+  const modelTone: StatusTone = ms === ModelStatus.READY ? "ok" : ms === ModelStatus.ERROR ? "error" : "busy";
 
   const speechReady = !counting || ms === ModelStatus.READY || ms === ModelStatus.ERROR;
   const ready = devices.mic === "on" && speechReady && !!exercise;
   const calibrated = settings.micOffset !== null;
+  // Calibration is optional: the delay is learned from takes (state/latency.ts).
+  // It's only offered up front when something looks wrong.
+  const micLabel = devices.mic === "on" ? audioEngine.deviceLabel : "";
+  const learned = learnedMicOffset(micLabel);
+  const calibrationNeeded = devices.mic === "on" && !calibrated ? calibrationReason(micLabel) : null;
 
   return (
     <div className="relative flex flex-col items-center w-full max-w-5xl mx-auto px-4 py-8 md:py-10 min-h-screen gap-4">
@@ -115,16 +117,6 @@ const SetupScreen: React.FC<Props> = ({
         </h1>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Clap the rhythm. Count out loud. See how you did.</p>
       </header>
-
-      <Card>
-        <SectionLabel>Student</SectionLabel>
-        <input
-          value={settings.studentName}
-          onChange={(e) => update({ studentName: e.target.value })}
-          placeholder="Your name"
-          className="block mx-auto w-full max-w-sm text-center text-lg font-semibold rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-5 py-2.5 outline-none focus:ring-2 focus:ring-emerald-500"
-        />
-      </Card>
 
       <Card>
         <SectionLabel>Rhythm Reading</SectionLabel>
@@ -206,30 +198,38 @@ const SetupScreen: React.FC<Props> = ({
 
         <div className="mt-6 flex flex-col items-center gap-2">
           <SectionLabel className="mb-0">Tempo</SectionLabel>
-          <div className="flex items-center gap-3 w-full max-w-md">
-            <button
-              type="button"
-              className="w-9 h-9 rounded-full bg-slate-100 dark:bg-slate-800 font-bold"
-              onClick={() => update({ tempo: Math.max(40, settings.tempo - 4) })}
-            >
-              −
-            </button>
+          <div className="flex flex-wrap sm:flex-nowrap items-center justify-center gap-2 w-full max-w-lg">
+            {[-4, -1].map((d) => (
+              <button
+                key={d}
+                type="button"
+                title={`${-d} BPM slower`}
+                className="w-10 h-9 shrink-0 rounded-full bg-slate-100 dark:bg-slate-800 font-bold text-sm"
+                onClick={() => update({ tempo: Math.max(40, settings.tempo + d) })}
+              >
+                −{-d}
+              </button>
+            ))}
             <input
               type="range"
               min={40}
               max={160}
               value={settings.tempo}
               onChange={(e) => update({ tempo: parseInt(e.target.value, 10) })}
-              className="flex-1 accent-walsh-green"
+              className="flex-1 min-w-0 accent-walsh-green"
             />
-            <button
-              type="button"
-              className="w-9 h-9 rounded-full bg-slate-100 dark:bg-slate-800 font-bold"
-              onClick={() => update({ tempo: Math.min(160, settings.tempo + 4) })}
-            >
-              +
-            </button>
-            <span className="w-24 text-right font-mono font-bold text-2xl text-walsh-green dark:text-emerald-400">
+            {[1, 4].map((d) => (
+              <button
+                key={d}
+                type="button"
+                title={`${d} BPM faster`}
+                className="w-10 h-9 shrink-0 rounded-full bg-slate-100 dark:bg-slate-800 font-bold text-sm"
+                onClick={() => update({ tempo: Math.min(160, settings.tempo + d) })}
+              >
+                +{d}
+              </button>
+            ))}
+            <span className="order-first sm:order-none basis-full sm:basis-auto sm:w-24 text-center sm:text-right font-mono font-bold text-2xl text-walsh-green dark:text-emerald-400">
               {settings.tempo}
               <span className="text-xs text-slate-400 ml-1">BPM</span>
             </span>
@@ -264,11 +264,14 @@ const SetupScreen: React.FC<Props> = ({
             {ms === ModelStatus.DOWNLOADING
               ? `Downloading ${devices.model.progress}%`
               : ms === ModelStatus.ERROR
-              ? devices.model.error ?? "Error"
-              : ms}
+                ? (devices.model.error ?? "Error")
+                : ms}
           </StatusPill>
           <StatusPill label="Camera" tone={camTone} icon={Icon.camera}>
-            {!settings.useCamera ? "Off" : devices.cameraError ?? (devices.camera === "on" ? "Tracking hands" : devices.camera === "starting" ? "Starting..." : "Not enabled")}
+            {!settings.useCamera
+              ? "Off"
+              : (devices.cameraError ??
+                (devices.camera === "on" ? "Tracking hands" : devices.camera === "starting" ? "Starting..." : "Not enabled"))}
           </StatusPill>
         </div>
         {ms === ModelStatus.DOWNLOADING && (
@@ -282,16 +285,24 @@ const SetupScreen: React.FC<Props> = ({
               Enable microphone{settings.useCamera ? " & camera" : ""}
             </Button>
           )}
-          {devices.mic === "on" && (
-            <Button variant={calibrated ? "secondary" : "gold"} onClick={onCalibrate}>
+          {devices.mic === "on" && calibrationNeeded && (
+            <Button variant="gold" onClick={onCalibrate}>
               {Icon.target}
-              {calibrated ? "Re-calibrate" : "Calibrate this computer"}
+              Check timing (20 seconds)
             </Button>
           )}
         </div>
-        {devices.mic === "on" && !calibrated && (
+        {devices.mic === "on" && calibrationNeeded && <p className="text-center text-xs text-slate-500 mt-2">{calibrationNeeded}</p>}
+        {devices.mic === "on" && !calibrationNeeded && (
           <p className="text-center text-xs text-slate-500 mt-2">
-            Calibrate once per computer so timing is measured accurately (takes 20 seconds).
+            {calibrated
+              ? "Timing calibrated on this computer. "
+              : learned.offset !== null
+                ? "Timing adjusts itself to this computer as you play. "
+                : `Timing adjusts itself to this computer as you play (${learned.takes} of ${MIN_TAKES} takes so far). `}
+            <button type="button" className="underline hover:text-slate-700 dark:hover:text-slate-300" onClick={onCalibrate}>
+              {calibrated ? "Re-check" : "Check it now"}
+            </button>
           </p>
         )}
       </Card>
@@ -310,7 +321,11 @@ const SetupScreen: React.FC<Props> = ({
           <svg className="w-20 h-20 ml-3" fill="currentColor" viewBox="0 0 24 24">
             <path d="M8 5v14l11-7z" />
           </svg>
-          {exercise && <span className="text-xs font-bold uppercase tracking-widest mt-1 opacity-80">{exercise.id === "custom" ? "Custom" : `#${shortPageLabel(exercise.pageId)} · ${exercise.label}`}</span>}
+          {exercise && (
+            <span className="text-xs font-bold uppercase tracking-widest mt-1 opacity-80">
+              {exercise.id === "custom" ? "Custom" : `#${shortPageLabel(exercise.pageId)} · ${exercise.label}`}
+            </span>
+          )}
         </button>
       </div>
     </div>
