@@ -132,6 +132,8 @@ export const buildDiagnostics = (meta: BundleMeta, outcome: TakeOutcome) => {
       counts: result.counts,
       rests: result.rests,
       countModel: d.countModel,
+      by: d.grader,
+      audioModel: d.audioModel,
       extraClaps: result.extraClaps,
       extraWords: result.extraWords,
       summary: result.summary,

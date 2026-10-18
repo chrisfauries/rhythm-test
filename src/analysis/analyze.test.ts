@@ -33,15 +33,7 @@ describe("analyzeTake", () => {
   it("flags early, late, missed and extra claps", () => {
     const claps = [10, 10.85, 12.15, 15.5, 15.75, 16, 17];
     const r = analyzeTake({ ...base, claps });
-    expect(r.notes.map((n) => n.status)).toEqual([
-      "on-time",
-      "early",
-      "late",
-      "missed",
-      "on-time",
-      "on-time",
-      "on-time",
-    ]);
+    expect(r.notes.map((n) => n.status)).toEqual(["on-time", "early", "late", "missed", "on-time", "on-time", "on-time"]);
     expect(r.extraClaps.map((e) => e.time)).toEqual([15.75]);
     expect(r.notes[1].offsetMs).toBe(-150);
   });
@@ -152,9 +144,108 @@ describe("analyzeTake", () => {
     expect(r.notes.map((n) => n.status)).toEqual(["on-time", "late", "on-time", "on-time", "on-time", "on-time", "on-time"]);
   });
 
+  describe("fast counts blended into one word", () => {
+    // 1 e & a 2 at 96 bpm: 16ths 156 ms apart, said as one connected word.
+    const fast: TakeInput = {
+      ...base,
+      line: parseLine("[ 16 16 16 16 ] q h", "4/4"),
+      bpm: 96,
+      activity: "count-notes",
+      voicedSpans: [[10, 10.75]],
+    };
+    const at = (k: number) => 10 + k * 0.15625;
+    const say = (pairs: [string, number][]) => pairs.map(([label, time]) => ({ word: label, label, time }));
+
+    it("doesn't time the subdivisions one by one", () => {
+      const r = analyzeTake({
+        ...fast,
+        words: say([
+          ["one", at(0)],
+          ["e", at(1) + 0.09],
+          ["and", at(2) + 0.14],
+          ["a", at(3) + 0.12],
+          ["two", at(4)],
+        ]),
+      });
+      expect(r.counts!.slice(0, 5).map((c) => c.status)).toEqual(["correct", "correct", "correct", "correct", "correct"]);
+      expect(r.counts![2].blended).toBe(true);
+    });
+
+    it("credits a syllable that merged into its neighbor while the voice carried on", () => {
+      const r = analyzeTake({
+        ...fast,
+        words: say([
+          ["one", at(0)],
+          ["e", at(1)],
+          ["and", at(2)],
+          ["two", at(4)],
+        ]),
+      });
+      expect(r.counts![3]).toMatchObject({ label: "a", status: "correct", blended: true });
+    });
+
+    it("gives timing-only credit when one subdivision word is heard as another", () => {
+      const r = analyzeTake({
+        ...fast,
+        voicedSpans: [],
+        words: say([
+          ["one", at(0)],
+          ["e", at(1)],
+          ["and", at(2)],
+          ["and", at(3)],
+          ["two", at(4)],
+        ]),
+      });
+      expect(r.counts![3]).toMatchObject({ label: "a", status: "correct", unclear: true, heard: "and" });
+    });
+
+    it("still marks a wrong number wrong", () => {
+      const r = analyzeTake({
+        ...fast,
+        words: say([
+          ["one", at(0)],
+          ["e", at(1)],
+          ["and", at(2)],
+          ["a", at(3)],
+          ["three", at(4)],
+        ]),
+      });
+      expect(r.counts![4]).toMatchObject({ label: "two", status: "wrong", heard: "three" });
+    });
+
+    it("credits a number merged with the subdivision before it (“a-two”)", () => {
+      const r = analyzeTake({
+        ...fast,
+        words: say([
+          ["one", at(0)],
+          ["e", at(1)],
+          ["and", at(2)],
+          ["a", at(4)],
+        ]),
+      });
+      expect(r.counts![4]).toMatchObject({ label: "two", status: "correct", unclear: true });
+    });
+
+    it("doesn't blend slow counts", () => {
+      const slow = { ...fast, line: parseLine("q q h", "4/4"), bpm: 60, voicedSpans: [[10, 12]] as [number, number][] };
+      const r = analyzeTake({
+        ...slow,
+        words: say([
+          ["one", 10],
+          ["two", 11.2],
+          ["three", 12],
+        ]),
+      });
+      expect(r.counts![1].status).toBe("late");
+    });
+  });
+
   it("grades sung notes and how long each is held", () => {
     const sung = { ...base, activity: "sing" as const, sungOnsets: perfect };
-    const full = analyzeTake({ ...sung, voicedSpans: perfect.map((t, i): [number, number] => [t, [11, 12, 14, 15.5, 16, 17, 18][i] - 0.05]) });
+    const full = analyzeTake({
+      ...sung,
+      voicedSpans: perfect.map((t, i): [number, number] => [t, [11, 12, 14, 15.5, 16, 17, 18][i] - 0.05]),
+    });
     expect(full.notes.every((n) => n.status === "on-time")).toBe(true);
     expect(full.notes[2].hold?.status).toBe("held");
     // The half note's "Da" stops after one beat.

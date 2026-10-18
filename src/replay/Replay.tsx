@@ -4,6 +4,8 @@ import { Recording } from "../audio/Recording";
 import { sungOnsets, voiceFrames, voicedSegments, voiceOnsetNear, voiceRuns } from "../audio/voice";
 import { Card } from "../components/ui";
 import { json, parseWav, readZip } from "../labeler/files";
+import { loadAudioModel, modelGraderInput } from "../ml/audioModel";
+import { USE_AUDIO_MODEL } from "../ml/flags";
 import { activityInfo, activityOfSettings } from "../music/activity";
 import { customExercise, Exercise, findExercise } from "../music/book";
 import ResultsScreen from "../screens/ResultsScreen";
@@ -12,6 +14,8 @@ import { TakeOutcome } from "../session/TakeRunner";
 // Replay (?results): open a capture or debug zip and see its results screen,
 // re-graded with the current code from what the sensors recorded. Useful for
 // reviewing old takes and for checking grading changes against real takes.
+// The audio model listens again unless ?model=rules, which re-grades what the
+// take's own detectors recorded.
 
 const load = async (file: File): Promise<{ exercise: Exercise; outcome: TakeOutcome }> => {
   const files = await readZip(file);
@@ -27,7 +31,15 @@ const load = async (file: File): Promise<{ exercise: Exercise; outcome: TakeOutc
   const speech: number = diag.offsets.speech;
   const vf = voiceFrames(data, sampleRate, t0);
   const runs = voiceRuns(vf);
-  const input = diag.grader.input;
+  const recorded = diag.grader.input;
+  const model = USE_AUDIO_MODEL ? await loadAudioModel() : null;
+  const heard = model
+    ? modelGraderInput(model, data, sampleRate, t0, {
+        mic: diag.offsets.mic,
+        speech,
+      }).input
+    : null;
+  const input = heard ? { ...recorded, claps: heard.claps, words: heard.words } : recorded;
   const result = analyzeTake({
     line: exercise.line,
     bpm: diag.exercise.tempo,
@@ -37,14 +49,21 @@ const load = async (file: File): Promise<{ exercise: Exercise; outcome: TakeOutc
     claps: input.claps,
     words: info.countMode ? input.words : null,
     frames: input.frames,
-    voiceOnsetNear: info.claps
-      ? (t) => {
-          const o = voiceOnsetNear(vf, t + speech, runs);
-          return o === null ? null : o - speech;
-        }
-      : undefined,
-    sungOnsets: info.sing ? sungOnsets(vf, voicedSegments(vf)).map((t) => t - speech) : undefined,
-    voicedSpans: info.sing ? runs.map((r): [number, number] => [r.start - speech, r.end - speech]) : undefined,
+    // Counts hidden under claps: only without the audio model (see TakeRunner).
+    voiceOnsetNear:
+      info.claps && !heard
+        ? (t) => {
+            const o = voiceOnsetNear(vf, t + speech, runs);
+            return o === null ? null : o - speech;
+          }
+        : undefined,
+    sungOnsets: !info.sing ? undefined : heard ? heard.sungOnsets : sungOnsets(vf, voicedSegments(vf)).map((t) => t - speech),
+    voicedSpans:
+      !info.sing && !info.countMode
+        ? undefined
+        : heard
+          ? heard.voicedSpans
+          : runs.map((r): [number, number] => [r.start - speech, r.end - speech]),
   });
   const videoName = Array.from(files.keys()).find((n) => n.startsWith("camera."));
   const video = videoName ? new Blob([files.get(videoName)! as BlobPart], { type: "video/webm" }) : null;
@@ -69,7 +88,10 @@ const load = async (file: File): Promise<{ exercise: Exercise; outcome: TakeOutc
 };
 
 const Replay: React.FC = () => {
-  const [take, setTake] = useState<{ exercise: Exercise; outcome: TakeOutcome } | null>(null);
+  const [take, setTake] = useState<{
+    exercise: Exercise;
+    outcome: TakeOutcome;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const open = async (f: File | undefined) => {
     if (!f) return;
@@ -94,7 +116,10 @@ const Replay: React.FC = () => {
     );
   }
   return (
-    <div className="max-w-xl mx-auto p-8" onDragOver={(e) => e.preventDefault()} onDrop={(e) => {
+    <div
+      className="max-w-xl mx-auto p-8"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
         e.preventDefault();
         open(e.dataTransfer.files[0]);
       }}

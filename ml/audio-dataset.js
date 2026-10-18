@@ -28,6 +28,8 @@ const F = require("./.build/ml/features.js");
 const V = require("./.build/audio/voice.js");
 const { ClapDetector } = require("./.build/audio/ClapDetector.js");
 const C = require("./.build/audio/clapClassifier.js");
+const R = require("./.build/music/rhythm.js");
+const Book = require("./.build/music/book.js");
 
 const OUT = path.join(__dirname, "data");
 const SEC = F.FRAME_SEC;
@@ -110,7 +112,19 @@ const eventsOf = (take) => {
   const { diag: d, labels, wav } = take;
   const activity = activityOf(d);
   const claps = activity.includes("clap");
-  const counting = (d.grader.counts ?? []).length > 0;
+  // The counts the student should say, by today's conventions (music/rhythm.ts
+  // expectedCounts): older captures stored their grader's counts, made before
+  // "count everything" included the rests.
+  const mode = activity === "clap-count-all" ? "all" : activity === "clap-count-notes" || activity === "count-notes" ? "notes" : null;
+  const ex = d.exercise.source ? Book.findExercise(d.exercise.id)?.exercise ?? Book.customExercise(d.exercise.source, d.exercise.timeSig) : null;
+  const expectedCounts =
+    mode && ex && d.grader.secPerQ != null
+      ? R.expectedCounts(ex.line, mode).map((c) => {
+          const old = (d.grader.counts ?? []).find((o) => Math.abs(o.pos - c.pos) < 1e-6 && o.label === c.label);
+          return { label: c.label, expectedTime: d.grader.startTime + c.pos * d.grader.secPerQ, time: old?.time ?? null, status: old?.status, unclear: old?.unclear };
+        })
+      : d.grader.counts ?? [];
+  const counting = expectedCounts.length > 0;
   const sing = activity === "sing";
   const t0 = d.wavStartCtx;
   const mic = d.offsets.mic;
@@ -151,7 +165,7 @@ const eventsOf = (take) => {
   };
   // `vosk`: whether speech recognition heard this count's word right (the app today).
   const voskHeard = (c) => ["correct", "early", "late"].includes(c.status) && !c.unclear;
-  if (counting) for (const c of d.grader.counts) voice(spoken(c.expectedTime), c.time != null ? spoken(c.time) : null, c.label, voskHeard(c));
+  if (counting) for (const c of expectedCounts) voice(spoken(c.expectedTime), c.time != null ? spoken(c.time) : null, c.label, voskHeard(c));
   if (sing) for (const n of d.grader.notes) voice(spoken(n.expectedTime), n.time != null ? spoken(n.time) : null, SING);
   return ev;
 };

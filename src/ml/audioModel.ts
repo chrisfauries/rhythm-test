@@ -1,4 +1,4 @@
-import { FRAME_SEC, melFrames, N_MELS } from "./features";
+import { FRAME_SEC, melFrames, N_MELS, toFeatureRate } from "./features";
 
 // The audio model: one network for everything the microphone hears. It reads
 // a whole take's log-mel frames (features.ts) and says, for every 10 ms frame,
@@ -87,10 +87,26 @@ const f32 = (b64: string) => {
 };
 
 type Loaded =
-  | { type: "conv2d"; inC: number; outC: number; w: Float32Array; b: Float32Array }
+  | {
+      type: "conv2d";
+      inC: number;
+      outC: number;
+      w: Float32Array;
+      b: Float32Array;
+    }
   | { type: "poolf" }
   | { type: "flatten" }
-  | { type: "conv1d"; inC: number; outC: number; k: number; dil: number; relu: boolean; residual: boolean; w: Float32Array; b: Float32Array };
+  | {
+      type: "conv1d";
+      inC: number;
+      outC: number;
+      k: number;
+      dil: number;
+      relu: boolean;
+      residual: boolean;
+      w: Float32Array;
+      b: Float32Array;
+    };
 
 /** 3x3 conv + ReLU over [c][t][f]. */
 const conv2d = (x: Float32Array, inC: number, T: number, F: number, outC: number, W: Float32Array, B: Float32Array) => {
@@ -254,20 +270,30 @@ export class AudioModel {
     const words = this.file.words;
     const nw = words.length;
     const sec = this.file.frameSec;
-    const claps = peaks(out.clap, thrClap, CLAP_GAP).map((i) => ({ time: refine(out.clap, i) * sec, conf: out.clap[i] }));
+    const claps = peaks(out.clap, thrClap, CLAP_GAP).map((i) => ({
+      time: refine(out.clap, i) * sec,
+      conf: out.clap[i],
+    }));
     const onsets = peaks(out.onset, thrOnset, ONSET_GAP).map((i) => {
       // The word: the onset frame and its neighbors, averaged.
       const probs: Record<string, number> = {};
       let n = 0;
       const p = new Float32Array(nw);
-      for (let t = Math.max(0, i - 1); t <= Math.min(out.frames - 1, i + 1); t++, n++) for (let w = 0; w < nw; w++) p[w] += out.words[t * nw + w];
+      for (let t = Math.max(0, i - 1); t <= Math.min(out.frames - 1, i + 1); t++, n++)
+        for (let w = 0; w < nw; w++) p[w] += out.words[t * nw + w];
       let best = 0;
       for (let w = 0; w < nw; w++) {
         p[w] /= n;
         probs[words[w]] = p[w];
         if (p[w] > p[best]) best = w;
       }
-      return { time: refine(out.onset, i) * sec, conf: out.onset[i], word: words[best], wordConf: p[best], probs };
+      return {
+        time: refine(out.onset, i) * sec,
+        conf: out.onset[i],
+        word: words[best],
+        wordConf: p[best],
+        probs,
+      };
     });
     // Voicing: runs above threshold, bridging 1-2 frame gaps, at least 40 ms long.
     const voicedSpans: [number, number][] = [];
@@ -306,4 +332,40 @@ export const loadAudioModel = () => {
       });
   }
   return loading;
+};
+
+/** What the grader takes from the audio model (see analysis/analyze.ts TakeInput). */
+export interface ModelGraderInput {
+  claps: number[];
+  words: { word: string; label: string; time: number }[];
+  sungOnsets: number[];
+  voicedSpans: [number, number][];
+}
+
+/**
+ * Runs the model on a take's recording and moves its events onto the grader's
+ * clock: claps by the mic delay, voice onsets (vowel starts, like the voicing
+ * rules give) by the speech delay. `t0` is the clock time of the recording's
+ * first sample.
+ */
+export const modelGraderInput = (
+  model: AudioModel,
+  data: Float32Array,
+  sampleRate: number,
+  t0: number,
+  offsets: { mic: number; speech: number },
+): { input: ModelGraderInput; events: AudioEvents } => {
+  const events = model.events(toFeatureRate(data, sampleRate));
+  const heard = (t: number) => t0 + t - offsets.mic;
+  const spoken = (t: number) => t0 + t - offsets.speech;
+  return {
+    events,
+    input: {
+      claps: events.claps.map((c) => heard(c.time)),
+      words: events.onsets.filter((o) => o.word !== "sing").map((o) => ({ word: o.word, label: o.word, time: spoken(o.time) })),
+      // Singing: every voice onset is a sung note, whatever word it sounded most like.
+      sungOnsets: events.onsets.map((o) => spoken(o.time)),
+      voicedSpans: events.voicedSpans.map(([s, e]): [number, number] => [spoken(s), spoken(e)]),
+    },
+  };
 };

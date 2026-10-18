@@ -48,17 +48,27 @@ export const useClickTrack = (media: RefObject<HTMLMediaElement | null>, clicks:
   }, [enabled, media]);
 };
 
-/** Schedules clicks while `el` plays; returns a function that stops listening. */
-const attach = (el: HTMLMediaElement, clicks: { current: Click[] }, enabled: { current: boolean }) => {
+/**
+ * Schedules clicks while `el` plays; returns a function that stops listening.
+ * The clicks go to the speakers, or to `out` (e.g. into a recording).
+ */
+export const attach = (
+  el: HTMLMediaElement,
+  clicks: { current: Click[] },
+  enabled: { current: boolean },
+  out?: { ctx: AudioContext; node: AudioNode; volume?: number },
+) => {
   let buffers: { normal: AudioBuffer; accent: AudioBuffer } | null = null;
   let gain: GainNode | null = null;
   const scheduled = new Set<AudioBufferSourceNode>();
   /** Media time up to which clicks are scheduled. */
   let until = -Infinity;
   let timer = 0;
+  /** Where playback (re)started: the clock only counts once it moves on from here. */
+  let anchor: number | null = null;
 
   const setup = () => {
-    const ctx = audioContext();
+    const ctx = out?.ctx ?? audioContext();
     if (ctx.state === "suspended") ctx.resume();
     if (!buffers) {
       const make = (freq: number) => {
@@ -69,8 +79,8 @@ const attach = (el: HTMLMediaElement, clicks: { current: Click[] }, enabled: { c
       };
       buffers = { normal: make(CLICK_HZ.normal), accent: make(CLICK_HZ.accent) };
       gain = ctx.createGain();
-      gain.gain.value = VOLUME;
-      gain.connect(ctx.destination);
+      gain.gain.value = out?.volume ?? VOLUME;
+      gain.connect(out?.node ?? ctx.destination);
     }
     return ctx;
   };
@@ -89,6 +99,15 @@ const attach = (el: HTMLMediaElement, clicks: { current: Click[] }, enabled: { c
 
   const pump = () => {
     if (el.paused || !enabled.current) return;
+    // While the element seeks or waits for data its clock stands still: clicks
+    // scheduled now would bunch up against the ones after (a long first beat).
+    if (el.seeking || el.readyState < el.HAVE_FUTURE_DATA) return;
+    // Playback really starts a little after play(): wait for the clock to move,
+    // or the first click comes early (a long first beat).
+    if (anchor !== null) {
+      if (el.currentTime === anchor) return;
+      anchor = null;
+    }
     const ctx = setup();
     const now = el.currentTime;
     const rate = el.playbackRate || 1;
@@ -108,6 +127,7 @@ const attach = (el: HTMLMediaElement, clicks: { current: Click[] }, enabled: { c
 
   const start = () => {
     cancel();
+    anchor = el.currentTime;
     window.clearInterval(timer);
     timer = window.setInterval(pump, 25);
     pump();
@@ -118,16 +138,21 @@ const attach = (el: HTMLMediaElement, clicks: { current: Click[] }, enabled: { c
   };
   const restart = () => {
     cancel();
+    anchor = el.paused ? null : el.currentTime;
     pump();
   };
 
   el.addEventListener("play", start);
+  el.addEventListener("playing", restart);
+  el.addEventListener("waiting", cancel);
   el.addEventListener("pause", stop);
   el.addEventListener("seeking", restart);
   el.addEventListener("ratechange", restart);
   if (!el.paused) start();
   return () => {
     el.removeEventListener("play", start);
+    el.removeEventListener("playing", restart);
+    el.removeEventListener("waiting", cancel);
     el.removeEventListener("pause", stop);
     el.removeEventListener("seeking", restart);
     el.removeEventListener("ratechange", restart);

@@ -88,7 +88,9 @@ batches, mixed precision, or holding out groups of takes (e.g. 5 folds) instead 
   timing stays at 10 ms), then five dilated 1-D convolutions over time (each frame sees about
   ±0.35 s), then a 1x1 layer to the outputs. 87k parameters, 455 KB.
 - **Labels** ([audio-dataset.js](audio-dataset.js)): the notation says *what* (the take was performed as
-  written), the app's detectors say exactly *when* (the grader's matched clap / vowel-onset times).
+  written; the counts by today's conventions, `expectedCounts`, not the ones stored with older
+  captures), the app's detectors say exactly *when* (the grader's matched clap / vowel-onset times;
+  for a count the old grader didn't expect, like the "&" of a rest, the nearest voice onset).
   Anything doubtful (a note the grader couldn't match, a sound that matches no note) is masked: no
   reward or penalty there. Labels saved in the labeler, and generated takes, are exact and replace this.
 - **v1 (2026-10-17, 79 real takes by one person), held out 5-fold by take:**
@@ -134,6 +136,16 @@ batches, mixed precision, or holding out groups of takes (e.g. 5 folds) instead 
 
   Still rising at 60 voices for counts under claps, flattening for clean counts and singing.
   Weakest words on new voices: the rare numbers (5-12) and "uh".
+- **v4 (2026-10-18), shipped:** retrained under the corrected counting conventions: real takes
+  labeled with today's `expectedCounts` ("count everything" says the "&" of a rest; 16 counts the
+  old labels lacked), and all 5,486 generated takes regenerated (a third of the mistake twins now
+  with structural mistakes: stops, restarts, starts a beat off, triplet/swing morphs, extra claps in
+  long or tied notes). Seed 0 of three (seeds 1, 2 graded worse). Held out on real takes about the
+  same as v3 (under claps 86.3%, clean 86.1%, sung 98.7%; count-only with claps mixed in 83.4% vs
+  87.5%). Grading Chris's 68 clean takes against the music (`npm run ml:grade-takes`): 33 at 100%
+  (v3: 29), 102 false flags (v3: 109); the "&" said on rests is now heard (10-A 91% → 99%,
+  10.5-D 99% → 100%). Still weak: "uh" (heard as "&"; 2 of 18 right held out) and "e" (5 of 26):
+  rare in the real takes.
 - Steps: `npm run ml:audio-dataset`, then `npm run ml:train-audio`, then
   `node ml/check-audio-model.js` (checks the TypeScript runtime against PyTorch).
   `LIMIT_TAKES=n` trains on n takes per fold (learning curves); runs go in `training-log-audio.csv`.
@@ -159,9 +171,14 @@ labeler (`?label`) for checking. They're trained on but never scored: only real 
    `dataset/synthetic/claps/` has every line clapped (claps only / with the metronome);
    `dataset/synthetic/voices/` has 12 lines per page per variant (counts / with the metronome /
    clap & count the notes / clap & count every beat / sung on "Da"), the voices taking turns.
-   Random tempo 60-160 per track. ~20% get a twin with mistakes (early, late, missed or extra
-   claps; wrong, missed, early, late or extra words; rushing; dragging), sized to the rhythm, and
-   listed in `dataset/synthetic/index.csv`.
+   Random tempo 60-160 per track. ~20% get a twin with mistakes, listed in
+   `dataset/synthetic/index.csv`: two-thirds a few small ones (early, late, missed or extra claps;
+   wrong, missed, early, late or extra words; rushing; dragging), sized to the rhythm; a third one
+   "structural" mistake of the kinds the feedback engine diagnoses (gave up, stopped, started over,
+   came in a beat late or early, sixteenths played as a triplet and said "1-la-li", swung eighths,
+   a clap during a long or tied note, a long note cut short).
+   Counts follow the conventions in `expectedCounts` (music/rhythm.ts): "count everything" says
+   every rest too, held notes are counted through.
 
 How the performances are shaped, from measurements of real takes (`node ml/measure-voice.js
 dataset/<student>`; add `--generated dataset/synthetic` to measure generated ones the same way):

@@ -8,13 +8,19 @@
   - To fix: expect one pulse at the start of every rest, and more on each later beat of a long rest.
   - Decide what counts for a multi-beat rest: is one pulse enough, or should there be one per beat?
   - Check the 0.15 s / 0.3 s search window for short rests. Fast eighth or sixteenth rests are closer together than that.
-- **Long notes: grade the forward motion.** Hands should stay together *and* move forward. Only "together" is checked now.
-- **Feedback engine: diagnose the mistake, not its symptoms** (user, 2026-10-17). It sits between the model's output (claps, words, times) and what the student is told. A fixed grid of metronome beats makes some mistakes look far worse than they are.
-  - Rushing or dragging: the student gradually speeds up or slows down but performs the right sequence. Follow their tempo (fit a tempo curve) and report "you sped up from measure 3" instead of marking every later note wrong.
-  - A skipped beat or an added beat of rest: everything after it is shifted by one beat. Re-align by sliding the grid forward or backward, then report the one skip or extra beat.
-  - Local stretching or squeezing within a beat or two, then back on the metronome: for example, 16ths taking too long or triplets compressed. Report it as a pattern tied to that rhythm figure ("your triplets are rushed"), especially when it repeats.
-  - Possible approach: align the performed events to the written ones with dynamic time warping (sequence first, timing second). Then explain the residual timing at three scales: a global tempo drift, single shifts, and per-figure distortions.
-  - The synthetic tracks already include gradual rushing and dragging. Skipped or added beats and per-figure squeezing could be added to `ml/synth.js` as labeled test cases for this engine.
+- **Fast subdivisions blend: don't grade each syllable's onset** (user, 2026-10-17). At faster tempos, musicians count 16ths as one connected word ("oneanna"), so "e", "&" and "uh" have no clean start. Built: the grader credits blended runs (BLEND_GAP in analyze.ts). Chris's 68 captures are the "perfect take" test: anything flagged there is a grading or model error.
+- **Long notes: grade the forward motion.** Hands should stay together *and* move forward. Each held note now records how far the hands moved (`hold.motion`, not scored), and feedback asks for a push when they stay still. The threshold (under 0.15 hand lengths and 5% size change) is set below anything in Chris's takes and is uncalibrated: record a take with the hands deliberately still on long notes, and some students' takes, to set it.
+- **Feedback engine** ([src/analysis/feedback.ts](src/analysis/feedback.ts) and [src/analysis/feedback/](src/analysis/feedback/), 2026-10-18). The results page leads with the one tip that would help most next time, then up to three more, and a reason under each score.
+  - Structure: detectors each read part of the take and report evidence (a candidate tip, how much of the score fixing it wins back, and which notes, counts and sounds it explains). Tier 1 (timing.ts) pairs sounds with notes and explains the timing as a whole; tier 2 finds patterns; tier 3 reports what's left. The general algorithm (ga.ts) drops evidence something stronger explains, ranks, and writes the tips.
+  - Diagnoses: setup; skipped or added beat; coming in a beat early or late; rushing or dragging; rushing through runs of notes; a steady offset; stopping, giving up, starting over; a late first note; a figure played as another (sixteenths as a triplet, swung eighths, dotted as even...); clapping during a long note, cutting one short, clapping a tied note; figures that keep coming early or late; wrong counts and wrong subdivision words; counts on held notes and rests; holds, pushing forward, rest pulses; single misses and extras.
+  - Checks: `npm test` (a unit test per diagnosis); `npm run ml:inject-mistakes` (each mistake put into 562 clean takes, Chris's real ones and synthetic ones: named first 82–99% depending on the kind, no false alarms on the clean takes); `npm run ml:check-feedback` (synthetic mistakes graded from their labels); `npm run ml:grade-takes` (the tip for each real take). `--json <file>` on the last two saves every take's feedback, to compare engine versions.
+  - The "uh" heard as "&" swap isn't reported (counts.ts `MISHEARD`): the audio model makes it on clean takes. Remove after retraining.
+  - Still to do:
+    - Synthetic audio takes with these mistakes (ml/synth.js), to measure the detectors on audio rather than on clean takes with events moved.
+    - Counting tips are only as good as the model's hearing; check them on other students' takes.
+    - Re-grade notes after a slip on the shifted grid, so the staff marks match the diagnosis.
+    - Tips across takes, e.g. "your eighths have been early in your last 3 tries".
+    - The ranking weights (ga.ts `WEIGHT`) are hand-set; have a teacher pick the best tip for a set of takes and tune them.
 
 ## Notation
 
@@ -38,12 +44,17 @@
 
 ## Models (see [ml/README.md](ml/README.md))
 
+- **Retrained under the corrected counting conventions** (v4, 2026-10-18; ml/README.md): the "&" of rests is heard now. Still weak on "uh" (heard as "&") and "e": record more 16th-note lines counted "1 e & uh", then retrain and drop `MISHEARD` in src/analysis/feedback/counts.ts.
+
 - Collect varied captures (`?training`): different students, rooms, mics, speaker metronome, 8th/16th lines with "e" and "a", deliberate mistakes.
 - Retrain the count model as captures arrive; watch the held-out numbers, not the training ones.
 - Upload captures straight to Google Drive (student sign-in, resumable upload for video) instead of downloading zips.
 - Store pose (arm) and face/lip points alongside hand points; lip movement could confirm words under claps and tell whose voice it is in a band room.
 - Labeler: label sung "Da"s (sung takes have nothing to check yet), holds and forward motion.
 - A/B: a test suite that runs the rule-based and model approaches over labeled captures and reports accuracy by rhythm type, setting and mic. Then split the app so both can run side by side.
+- **Synthetic takes from other people's real takes** (user idea, 2026-10-17), once there are takes from 5–6 people besides Chris. Cut their labeled words, "Da"s and claps into sound banks, the way `ml/sound-bank.js` does with the TTS voices, and let `ml/synth.js` build new lines from them. Real voices, real rooms and real mics would replace or add to the speech-engine voices.
+  - Keep one or two of those people out of the synthetic sounds as well as training, so the test stays honest.
+  - Measure their counting and singing with `ml/measure-voice.js` too; Chris's style may not be typical.
 - **Synthetic video from real captures** (user idea, 2026-10-17), for when there is a video model. Swap the person (body or face swap) and the background in real takes, and keep the original labels, since the motion and timing are unchanged.
   - Use invented, AI-generated people, not celebrities. Real people's likenesses raise rights and consent issues.
   - Students are minors: get consent before using their video this way, and run the swap locally.

@@ -1,8 +1,11 @@
-// Which models the app uses (A/B testing): ?model=counts turns on the
-// count-word model for counts the clap's echo hides from speech recognition.
-const models = (new URLSearchParams(window.location.search).get("model") ?? "").split(",");
+import { TOOLS } from "../state/tools";
 
-export const USE_COUNT_MODEL = models.includes("counts");
+// Which models the app uses (Settings → Tools, or ?model= in the URL). The
+// audio model (ml/audioModel.ts) grades by default; "rules" goes back to the
+// clap detector, voicing rules and Vosk, optionally with the old count-word model.
+export const USE_AUDIO_MODEL = TOOLS.grader === "model";
+
+export const USE_COUNT_MODEL = !USE_AUDIO_MODEL && TOOLS.countModel;
 
 /**
  * How grading trusts the count model. Chosen on held-out takes to almost never

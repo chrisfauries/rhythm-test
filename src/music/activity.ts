@@ -20,8 +20,8 @@ export interface ActivityInfo {
 export const ACTIVITIES: ActivityInfo[] = [
   {
     id: "clap-count-all",
-    label: "Clap & count every beat",
-    hint: "Clap the notes and say every beat, rests too. Pulse your hands down on rests; hold them together through long notes.",
+    label: "Clap & count everything",
+    hint: "Clap the notes and say the count of every note and rest, and every beat of a long rest (a whole rest is 1 2 3 4). Pulse your hands down on rests; hold them together through long notes.",
     claps: true,
     countMode: "all",
     sing: false,
@@ -64,5 +64,4 @@ export const activityInfo = (a: Activity): ActivityInfo => ACTIVITIES.find((x) =
 
 /** The activity a saved take used, from its settings (older takes stored countMode/useSpeech instead). */
 export const activityOfSettings = (settings: any): Activity =>
-  settings?.activity ??
-  (settings?.useSpeech === false ? "clap" : settings?.countMode === "all" ? "clap-count-all" : "clap-count-notes");
+  settings?.activity ?? (settings?.useSpeech === false ? "clap" : settings?.countMode === "all" ? "clap-count-all" : "clap-count-notes");

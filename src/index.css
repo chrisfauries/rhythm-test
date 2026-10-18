@@ -15,3 +15,7 @@
   100% { transform: scale(1.6); opacity: 0; }
 }
 .clap-pop { animation: clapPop 450ms ease-out forwards; transform-box: fill-box; transform-origin: center; }
+
+/* Seek bar under a take's video (components/PlayerBar.tsx). */
+.player-seek::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 9999px; background: #FFB81C; border: 2px solid #fff; }
+.player-seek::-moz-range-thumb { width: 14px; height: 14px; border-radius: 9999px; background: #FFB81C; border: 2px solid #fff; }

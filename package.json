@@ -31,7 +31,10 @@
     "ml:synth": "sh ml/build.sh && node ml/synth.js",
     "ml:audio-dataset": "sh ml/build.sh && node ml/audio-dataset.js dataset ml/captures",
     "ml:train-audio": "python ml/train_audio.py",
-    "ml:measure-voice": "sh ml/build.sh && node ml/measure-voice.js dataset/chris_fauries"
+    "ml:measure-voice": "sh ml/build.sh && node ml/measure-voice.js dataset/chris_fauries",
+    "ml:grade-takes": "sh ml/build.sh && node ml/grade-takes.js",
+    "ml:check-feedback": "sh ml/build.sh && node ml/check-feedback.js",
+    "ml:inject-mistakes": "sh ml/build.sh && node ml/inject-mistakes.js"
   },
   "eslintConfig": {
     "extends": [

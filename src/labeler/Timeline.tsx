@@ -5,36 +5,43 @@ import { EventType, LabelEvent, TakeInfo } from "./labels";
 // The labeler's timeline: ruler (measures/beats), waveform, spectrogram, and
 // one lane per event type, all on audio.wav's clock. Meaning never depends on
 // color: an event's shape says what it is, hollow means the app found it,
-// filled means a person checked it. Click to seek or select, drag to move; in
-// an "add" tool, a click adds an event there.
+// filled means a person checked it.
+//   - click a mark to select it, drag it to move it; right-click it to remove it
+//   - click or drag anywhere else to move the playhead (dragging skims the audio)
+//   - right-click anywhere else for a menu that adds a mark there
+//   - shift+drag, or drag the top strip, to slide along; scroll to zoom
 
 export interface View {
   start: number;
   dur: number;
 }
 
-export type Tool = "select" | EventType;
-
 interface Props {
   info: TakeInfo;
   audio: Float32Array;
   sampleRate: number;
-  spectrogram: { cols: number; bins: number; hop: number; data: Uint8ClampedArray } | null;
+  spectrogram: {
+    cols: number;
+    bins: number;
+    hop: number;
+    data: Uint8ClampedArray;
+  } | null;
   hands: { wav: number; together: boolean | null }[];
   events: LabelEvent[];
   selected: number | null;
   time: number;
   view: View;
   duration: number;
-  tool: Tool;
-  /** The beat being reviewed, shaded across all lanes. */
-  band: [number, number] | null;
   showClaps: boolean;
   onView: (v: View) => void;
   onSeek: (t: number) => void;
+  /** The playhead is being dragged: play a snippet of sound there. */
+  onScrub: (t: number) => void;
   onSelect: (id: number | null) => void;
   onMove: (id: number, t: number) => void;
-  onAdd: (type: EventType, t: number) => void;
+  onRemove: (id: number) => void;
+  /** Right-click on empty timeline: where (page coordinates), at what time, in which lane. */
+  onMenu: (at: { x: number; y: number; t: number; lane: EventType | null }) => void;
 }
 
 interface Lane {
@@ -45,15 +52,20 @@ interface Lane {
 }
 
 const lanesFor = (showClaps: boolean): Lane[] => [
-  { key: "ruler", h: 22, label: "" },
-  { key: "wave", h: 56, label: "🔊 Sound" },
-  { key: "spec", h: 80, label: "Sound picture (spectrogram)" },
-  ...(showClaps ? [{ key: "clap", h: 34, label: "👏 Claps", type: "clap" as const }] : []),
-  { key: "count", h: 38, label: "🗣️ Counts", type: "count" },
+  { key: "ruler", h: 28, label: "" },
+  { key: "wave", h: 130, label: "🔊 Sound" },
+  { key: "spec", h: 200, label: "Sound picture (spectrogram)" },
+  ...(showClaps ? [{ key: "clap", h: 64, label: "👏 Claps", type: "clap" as const }] : []),
+  { key: "count", h: 72, label: "🗣️ Counts", type: "count" },
   ...(showClaps
     ? [
-        { key: "pulse", h: 34, label: "👇 Rest pulses", type: "pulse" as const },
-        { key: "hands", h: 22, label: "🙌 Hands together" },
+        {
+          key: "pulse",
+          h: 64,
+          label: "👐 Rest pulses",
+          type: "pulse" as const,
+        },
+        { key: "hands", h: 32, label: "🙌 Hands together" },
       ]
     : []),
 ];
@@ -63,7 +75,13 @@ const GUIDE = "rgba(71,85,105,0.7)";
 
 const Timeline: React.FC<Props> = (p) => {
   const ref = useRef<HTMLCanvasElement>(null);
-  const drag = useRef<{ id: number | null; pan: number | null; startX: number; viewStart: number } | null>(null);
+  const drag = useRef<{
+    id: number | null;
+    pan: number | null;
+    startX: number;
+    viewStart: number;
+    scrub: boolean;
+  } | null>(null);
   const lanes = useMemo(() => lanesFor(p.showClaps), [p.showClaps]);
   const height = lanes.reduce((a, l) => a + l.h, 0);
   const laneTop = (key: string) => {
@@ -144,18 +162,6 @@ const Timeline: React.FC<Props> = (p) => {
       y += l.h;
     });
 
-    // The beat under review: a shaded band with dashed edges.
-    if (p.band) {
-      const a = x(p.band[0]);
-      const b = x(p.band[1]);
-      g.fillStyle = "rgba(148,163,184,0.18)";
-      g.fillRect(a, 0, b - a, height);
-      g.strokeStyle = "rgba(71,85,105,0.5)";
-      g.setLineDash([4, 4]);
-      g.strokeRect(a, 0.5, b - a, height - 1);
-      g.setLineDash([]);
-    }
-
     // Beats (light), measure starts (dark) with numbers, across all lanes.
     info.beats.forEach((b, i) => {
       const xb = x(b);
@@ -170,9 +176,9 @@ const Timeline: React.FC<Props> = (p) => {
       g.lineTo(xb, height);
       g.stroke();
       g.fillStyle = "#475569";
-      g.font = "bold 11px system-ui";
-      if (measureStart) g.fillText(`Measure ${beatInLine / info.beatsPerMeasure + 1}`, xb + 3, 15);
-      else if (!inLine) g.fillText(`count-in ${i + 1}`, xb + 3, 15);
+      g.font = "bold 12px system-ui";
+      if (measureStart) g.fillText(`Measure ${beatInLine / info.beatsPerMeasure + 1}`, xb + 3, 18);
+      else if (!inLine) g.fillText(`count-in ${i + 1}`, xb + 3, 18);
     });
 
     // Waveform.
@@ -214,8 +220,8 @@ const Timeline: React.FC<Props> = (p) => {
       g.setLineDash([]);
       if (text) {
         g.fillStyle = GUIDE;
-        g.font = "11px system-ui";
-        g.fillText(text, xg - 3, top + 11);
+        g.font = "12px system-ui";
+        g.fillText(text, xg - 3, top + 13);
       }
     };
     info.notes.forEach((n) => guide("clap", n.t));
@@ -255,13 +261,13 @@ const Timeline: React.FC<Props> = (p) => {
       if (sel) {
         g.lineWidth = 2;
         g.setLineDash([3, 2]);
-        g.strokeRect(xe - 12, top + 2, 24 + (e.type === "count" ? 18 : 0), h - 4);
+        g.strokeRect(xe - 12, top + 2, 24 + (e.type === "count" ? 22 : 0), h - 4);
         g.setLineDash([]);
       }
       g.lineWidth = 2;
       if (e.type === "count") {
         const text = e.label ? wordDisplay(e.label) : "?";
-        g.font = `bold ${sel ? 16 : 14}px system-ui`;
+        g.font = `bold ${sel ? 20 : 18}px system-ui`;
         if (filled) g.fillText(text, xe + 4, mid + 4);
         else {
           g.strokeStyle = INK;
@@ -271,12 +277,12 @@ const Timeline: React.FC<Props> = (p) => {
       } else {
         g.beginPath();
         if (e.type === "pulse") {
-          g.moveTo(xe - 6, mid - 5);
-          g.lineTo(xe + 6, mid - 5);
-          g.lineTo(xe, mid + 5);
+          g.moveTo(xe - 8, mid - 7);
+          g.lineTo(xe + 8, mid - 7);
+          g.lineTo(xe, mid + 7);
           g.closePath();
         } else {
-          g.arc(xe, mid, 6, 0, Math.PI * 2);
+          g.arc(xe, mid, 8, 0, Math.PI * 2);
         }
         if (filled) g.fill();
         else {
@@ -336,43 +342,73 @@ const Timeline: React.FC<Props> = (p) => {
     return best;
   };
 
+  const pan = (clientX: number) => {
+    const d = drag.current!;
+    const r = ref.current!.getBoundingClientRect();
+    const start = d.viewStart - ((clientX - d.pan!) / r.width) * p.view.dur;
+    p.onView({
+      ...p.view,
+      start: Math.max(-1, Math.min(p.duration - p.view.dur + 1, start)),
+    });
+  };
+
   return (
     <canvas
       ref={ref}
-      style={{ width: "100%", height, cursor: p.tool === "select" ? "default" : "copy", display: "block", borderRadius: 12 }}
-      onMouseDown={(e) => {
-        if (p.tool !== "select") {
-          p.onAdd(p.tool, timeAt(e.clientX));
-          return;
-        }
+      style={{
+        width: "100%",
+        height,
+        cursor: "default",
+        display: "block",
+        borderRadius: 12,
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
         const l = laneAt(e.clientY);
-        if (l.key === "ruler") {
-          drag.current = { id: null, pan: e.clientX, startX: e.clientX, viewStart: p.view.start };
+        const ev = l.type ? hit(e.clientX, l.type) : null;
+        if (ev) p.onRemove(ev.id);
+        else
+          p.onMenu({
+            x: e.clientX,
+            y: e.clientY,
+            t: timeAt(e.clientX),
+            lane: l.type ?? null,
+          });
+      }}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        const base = {
+          startX: e.clientX,
+          viewStart: p.view.start,
+          scrub: false,
+        };
+        const l = laneAt(e.clientY);
+        if (e.shiftKey || l.key === "ruler") {
+          drag.current = { ...base, id: null, pan: e.clientX };
           return;
         }
         if (l.type) {
           const ev = hit(e.clientX, l.type);
           if (ev) {
             p.onSelect(ev.id);
-            drag.current = { id: ev.id, pan: null, startX: e.clientX, viewStart: p.view.start };
+            drag.current = { ...base, id: ev.id, pan: null };
             return;
           }
         }
         p.onSelect(null);
         p.onSeek(timeAt(e.clientX));
-        drag.current = { id: null, pan: null, startX: e.clientX, viewStart: p.view.start };
+        drag.current = { ...base, id: null, pan: null, scrub: true };
       }}
       onMouseMove={(e) => {
         const d = drag.current;
         if (!d) return;
-        if (d.pan !== null) {
-          const r = ref.current!.getBoundingClientRect();
-          const start = d.viewStart - ((e.clientX - d.pan) / r.width) * p.view.dur;
-          p.onView({ ...p.view, start: Math.max(-1, Math.min(p.duration - p.view.dur + 1, start)) });
-        } else if (d.id !== null) {
+        if (d.pan !== null) pan(e.clientX);
+        else if (d.id !== null) {
           if (Math.abs(e.clientX - d.startX) > 2) p.onMove(d.id, timeAt(e.clientX));
         } else {
-          p.onSeek(timeAt(e.clientX));
+          const t = timeAt(e.clientX);
+          p.onSeek(t);
+          if (d.scrub) p.onScrub(t);
         }
       }}
       onMouseUp={() => (drag.current = null)}
@@ -382,7 +418,10 @@ const Timeline: React.FC<Props> = (p) => {
         if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
           const d = e.shiftKey ? e.deltaY : e.deltaX;
           const start = p.view.start + (d / 500) * p.view.dur;
-          p.onView({ ...p.view, start: Math.max(-1, Math.min(p.duration - p.view.dur + 1, start)) });
+          p.onView({
+            ...p.view,
+            start: Math.max(-1, Math.min(p.duration - p.view.dur + 1, start)),
+          });
         } else {
           const dur = Math.max(0.4, Math.min(p.duration + 2, p.view.dur * Math.exp(e.deltaY / 400)));
           const frac = (t - p.view.start) / p.view.dur;

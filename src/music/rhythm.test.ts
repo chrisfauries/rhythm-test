@@ -1,12 +1,6 @@
 import { BOOK } from "./bookData";
 import { expandShorthand, PAGES } from "./book";
-import {
-  countLabel,
-  expectedClaps,
-  expectedCounts,
-  parseLine,
-  RhythmParseError,
-} from "./rhythm";
+import { countLabel, expectedClaps, expectedCounts, parseLine, RhythmParseError } from "./rhythm";
 
 describe("book transcription", () => {
   for (const page of BOOK) {
@@ -82,47 +76,27 @@ describe("parseLine", () => {
 
 describe("counts", () => {
   it("labels subdivisions", () => {
-    expect([0, 0.25, 0.5, 0.75, 1, 1 / 3, 2 / 3].map(countLabel)).toEqual([
-      "one",
-      "e",
-      "and",
-      "a",
-      "two",
-      "la",
-      "li",
-    ]);
+    expect([0, 0.25, 0.5, 0.75, 1, 1 / 3, 2 / 3].map(countLabel)).toEqual(["one", "e", "and", "a", "two", "la", "li"]);
   });
 
   it("counts held notes but not rests in 'notes' mode", () => {
     const line = parseLine("h qr 8 8", "4/4");
-    expect(expectedCounts(line, "notes").map((c) => c.label)).toEqual([
-      "one",
-      "two",
-      "four",
-      "and",
-    ]);
+    expect(expectedCounts(line, "notes").map((c) => c.label)).toEqual(["one", "two", "four", "and"]);
+  });
+
+  it("counts every beat and every rest in 'all' mode", () => {
+    // The "&" of the eighth rest, and both beats of the half rest.
+    const line = parseLine("8 8r q | hr", "2/4");
+    expect(expectedCounts(line, "all").map((c) => c.label)).toEqual(["one", "and", "two", "one", "two"]);
   });
 
   it("counts every beat in 'all' mode", () => {
     const line = parseLine("h qr 8 8", "4/4");
-    expect(expectedCounts(line, "all").map((c) => c.label)).toEqual([
-      "one",
-      "two",
-      "three",
-      "four",
-      "and",
-    ]);
+    expect(expectedCounts(line, "all").map((c) => c.label)).toEqual(["one", "two", "three", "four", "and"]);
   });
 
   it("counts eighth-note beats in 6/8", () => {
     const line = parseLine("q. 8 8 8", "6/8");
-    expect(expectedCounts(line, "notes").map((c) => c.label)).toEqual([
-      "one",
-      "two",
-      "three",
-      "four",
-      "five",
-      "six",
-    ]);
+    expect(expectedCounts(line, "notes").map((c) => c.label)).toEqual(["one", "two", "three", "four", "five", "six"]);
   });
 });

@@ -298,6 +298,115 @@ const addMistakes = (perf, secPerQ, lineSec) => {
   return done;
 };
 
+/**
+ * One "structural" mistake instead (the feedback engine's diagnoses): giving
+ * up, stopping, starting over, coming in a beat off, a figure played as
+ * another, clapping during a long or tied note, cutting a long note short.
+ * Changes the performance in place; returns what was done ([] if this line
+ * has nothing it applies to).
+ */
+const STRUCTURAL = ["gave-up", "stopped", "restart", "late-start", "early-start", "morph-triplet", "morph-swing", "held-beat-clap", "tie-clap", "cut-short"];
+const STRUCTURAL_SHARE = 1 / 3;
+const addStructural = (perf, line, secPerQ, lineSec, endSec) => {
+  const beat = R.beatLength(line.timeSig);
+  const mLen = R.measureLength(line.timeSig);
+  const beatSec = beat * secPerQ;
+  const measures = line.measures.length;
+  const notes = R.expectedClaps(line);
+  const all = () => [...perf.claps, ...perf.words];
+  const keep = (f) => {
+    perf.claps = perf.claps.filter(f);
+    perf.words = perf.words.filter(f);
+  };
+  const frac = (pos) => pos / beat - Math.floor(pos / beat + 1e-6);
+  const longs = notes.filter((n, i) => n.len >= 2 * beat - 1e-6 && notes[i + 1] && Math.abs(notes[i + 1].pos - n.pos - n.len) < 1e-6);
+  const tied = R.placeNotes(line).filter((p, k, ps) => k > 0 && !ps[k - 1].note.rest && ps[k - 1].note.tie && !p.note.rest);
+  for (const kind of shuffle(STRUCTURAL)) {
+    if (kind === "gave-up" && measures >= 4) {
+      const from = Math.floor(measures / 2 + rand() * (measures / 2 - 1)) * mLen;
+      keep((e) => e.pos === null || e.pos < from - 1e-6);
+      return [{ type: kind, pos: from }];
+    }
+    if (kind === "stopped" && measures >= 5) {
+      const from = (1 + Math.floor(rand() * (measures - 3))) * mLen;
+      const to = from + 1.5 * mLen;
+      if (notes.filter((n) => n.pos >= from - 1e-6 && n.pos < to).length < 3) continue;
+      keep((e) => e.pos === null || e.pos < from - 1e-6 || e.pos >= to - 1e-6);
+      return [{ type: kind, pos: from, to }];
+    }
+    if (kind === "restart" && measures >= 4) {
+      // Stop after one or two measures, pause about a measure, start again from the top.
+      const from = (1 + Math.floor(rand() * 2)) * mLen;
+      const again = from * secPerQ + uniform(0.8, 1.5) * mLen * secPerQ;
+      const before = all().filter((e) => e.pos !== null && e.pos < from - 1e-6);
+      const copy = all()
+        .filter((e) => e.pos !== null)
+        .map((e) => ({ ...e, t: e.t + again, pos: e.pos + 1000 }))
+        .filter((e) => e.t < endSec - 0.3);
+      keep((e) => e.pos === null || e.pos < from - 1e-6);
+      perf.claps.push(...copy.filter((e) => !("label" in e)));
+      perf.words.push(...copy.filter((e) => "label" in e));
+      return before.length >= 3 ? [{ type: kind, pos: from }] : [];
+    }
+    if (kind === "late-start" || kind === "early-start") {
+      const d = (kind === "late-start" ? 1 : -1) * beatSec;
+      for (const e of all()) e.t += d;
+      return [{ type: kind }];
+    }
+    if (kind === "morph-triplet") {
+      // Every beat of four sixteenths comes out as a triplet (said "1-la-li").
+      const beats = new Set(notes.filter((n) => Math.abs(frac(n.pos) - 0.25) < 1e-6).map((n) => Math.floor(n.pos / beat + 1e-6)));
+      const full = [...beats].filter((b) => [0, 0.25, 0.5, 0.75].every((f) => notes.some((n) => Math.abs(n.pos - (b + f) * beat) < 1e-6)));
+      if (full.length < 2) continue;
+      for (const b of full) {
+        // Claps and words each keep their own beat start (the voice lags the hands).
+        for (const list of [perf.claps, perf.words]) {
+          const t0 = list.find((e) => e.pos !== null && Math.abs(e.pos - b * beat) < 1e-6)?.t;
+          if (t0 === undefined) continue;
+          for (const e of list) {
+            if (e.pos === null || e.pos <= b * beat + 1e-6 || e.pos >= (b + 1) * beat - 1e-6) continue;
+            const f = frac(e.pos);
+            if (Math.abs(f - 0.75) < 1e-6) {
+              e.drop = true;
+              continue;
+            }
+            e.t = t0 + (f < 0.4 ? 1 / 3 : 2 / 3) * beatSec;
+            if (e.label === SING) e.len = beatSec / 3;
+            else if (e.label !== undefined) e.label = f < 0.4 ? "la" : "li";
+          }
+        }
+      }
+      keep((e) => !e.drop);
+      return [{ type: kind, beats: full.length }];
+    }
+    if (kind === "morph-swing") {
+      // Every pair of even eighths comes out long-short.
+      const ands = notes.filter((n) => Math.abs(frac(n.pos) - 0.5) < 1e-6 && notes.some((m) => Math.abs(m.pos - (n.pos - beat / 2)) < 1e-6) && Math.abs(n.len - beat / 2) < 1e-6);
+      if (ands.length < 3) continue;
+      const d = uniform(0.14, 0.2) * beatSec;
+      for (const e of all()) if (e.pos !== null && ands.some((n) => Math.abs(n.pos - e.pos) < 1e-6)) e.t += d;
+      return [{ type: kind, notes: ands.length }];
+    }
+    if (kind === "held-beat-clap" && perf.claps.length && longs.length) {
+      const n = pick(longs);
+      perf.claps.push({ pos: null, t: (n.pos + beat) * secPerQ });
+      return [{ type: kind, pos: n.pos + beat }];
+    }
+    if (kind === "tie-clap" && perf.claps.length && tied.length) {
+      const p = pick(tied);
+      perf.claps.push({ pos: null, t: p.pos * secPerQ });
+      return [{ type: kind, pos: p.pos }];
+    }
+    if (kind === "cut-short" && perf.claps.length && longs.length) {
+      const n = pick(longs);
+      const next = n.pos + n.len;
+      for (const e of all()) if (e.pos !== null && Math.abs(e.pos - next) < 1e-6) e.t -= beatSec;
+      return [{ type: kind, pos: next }];
+    }
+  }
+  return [];
+};
+
 // --- rendering -----------------------------------------------------------------
 const mixIn = (out, clip, at, gain) => {
   const a = Math.round(at * SR);
@@ -501,7 +610,11 @@ const makeTake = (ex, plan) => {
   const out = new Float32Array(Math.ceil(total * SR));
 
   const perf = perform(ex.line, plan, secPerQ);
-  const mistakes = plan.mistakes ? addMistakes(perf, secPerQ, lineSec) : [];
+  let mistakes = [];
+  if (plan.mistakes && rand() < STRUCTURAL_SHARE) mistakes = addStructural(perf, ex.line, secPerQ, lineSec, total - lineStart);
+  if (plan.mistakes && !mistakes.length) mistakes = addMistakes(perf, secPerQ, lineSec);
+  perf.claps.sort((a, b) => a.t - b.t);
+  perf.words.sort((a, b) => a.t - b.t);
 
   roomNoise(out, uniform(0.5, 2));
   // Sometimes more going on in the room: up to two of hum, fan, tap, TV.

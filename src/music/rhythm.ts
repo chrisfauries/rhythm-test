@@ -164,9 +164,7 @@ export const parseLine = (source: string, timeSig: TimeSignature | string): Line
       }
       const m = TOKEN.exec(tok);
       if (!m) {
-        throw new RhythmParseError(
-          `${where}: "${tok}" is not a note. Use w, h, q, 8, 16 or 32 with optional ".", "r" or "~".`
-        );
+        throw new RhythmParseError(`${where}: "${tok}" is not a note. Use w, h, q, 8, 16 or 32 with optional ".", "r" or "~".`);
       }
       notes.push({
         base: m[1] as BaseDuration,
@@ -186,9 +184,7 @@ export const parseLine = (source: string, timeSig: TimeSignature | string): Line
     const total = notes.reduce((acc, n) => acc + noteLength(n, ts), 0);
     if (Math.abs(total - measureLength(ts)) > EPS) {
       const have = +(total / beatLength(ts)).toFixed(3);
-      throw new RhythmParseError(
-        `${where} has ${have} beats but ${timeSigText(ts)} needs ${ts.num}.`
-      );
+      throw new RhythmParseError(`${where} has ${have} beats but ${timeSigText(ts)} needs ${ts.num}.`);
     }
     return notes;
   });
@@ -198,19 +194,16 @@ export const parseLine = (source: string, timeSig: TimeSignature | string): Line
       if (!n.tie) return;
       const next = notes[ni + 1] ?? measures[mi + 1]?.[0];
       if (n.rest || !next || next.rest) {
-        throw new RhythmParseError(
-          `Measure ${mi + 1}: a tie must connect two notes (not rests).`
-        );
+        throw new RhythmParseError(`Measure ${mi + 1}: a tie must connect two notes (not rests).`);
       }
-    })
+    }),
   );
 
   return { timeSig: ts, measures, ...(explicitBeams ? { explicitBeams } : {}) };
 };
 
 /** Line length in q-units. */
-export const lineLength = (line: Line) =>
-  line.measures.length * measureLength(line.timeSig);
+export const lineLength = (line: Line) => line.measures.length * measureLength(line.timeSig);
 
 /** Number of counted beats in the line. */
 export const lineBeats = (line: Line) => line.measures.length * line.timeSig.num;
@@ -267,20 +260,7 @@ export const expectedClaps = (line: Line): ExpectedClap[] => {
   return claps;
 };
 
-export const NUMBER_WORDS = [
-  "one",
-  "two",
-  "three",
-  "four",
-  "five",
-  "six",
-  "seven",
-  "eight",
-  "nine",
-  "ten",
-  "eleven",
-  "twelve",
-];
+export const NUMBER_WORDS = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
 
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-4;
 
@@ -306,9 +286,12 @@ export const countDisplay = (label: string) => {
 };
 
 export type CountMode =
-  /** Say the count of every note; keep counting through held notes; rests are silent. */
+  /** Say the count of every note (wherever you'd clap); keep counting through held notes; rests are silent. */
   | "notes"
-  /** Say every beat (including rests), plus the "&"/"e"/"a" of notes off the beat. */
+  /**
+   * "Count everything": say the count of every note and every rest, and every
+   * beat of a long rest (a whole rest is "1 2 3 4"), plus held beats as in "notes".
+   */
   | "all";
 
 export interface ExpectedCount {
@@ -333,6 +316,8 @@ export const expectedCounts = (line: Line, mode: CountMode): ExpectedCount[] => 
   }
   if (mode === "all") {
     for (let b = 0; b < lineBeats(line); b++) add(b * beat);
+    // Rests off the beat too: the "&" of an eighth rest.
+    for (const p of placeNotes(line)) if (p.note.rest) add(p.pos);
   }
 
   return Array.from(positions.entries())

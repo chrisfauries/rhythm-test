@@ -1,20 +1,15 @@
 import { Model } from "vosk-browser";
 import { analyzeTake, TakeFrame, TakeResult, TakeWord } from "../analysis/analyze";
 import { audioEngine, ClickHandle } from "../audio/AudioEngine";
-import {
-  CANDIDATE_OPTIONS,
-  CLASSIFY_DELAY,
-  ClapCandidate,
-  clapBias,
-  classifyCandidate,
-} from "../audio/clapClassifier";
+import { CANDIDATE_OPTIONS, CLASSIFY_DELAY, ClapCandidate, clapBias, classifyCandidate } from "../audio/clapClassifier";
 import { ClapDetector, Onset } from "../audio/ClapDetector";
 import { Recording } from "../audio/Recording";
 import { sungOnsets, VoicedSegment, voiceFrames, voicedSegments, voiceOnsetNear, VoiceRun, voiceRuns } from "../audio/voice";
 import { activityInfo } from "../music/activity";
+import { AudioEvents, loadAudioModel, modelGraderInput } from "../ml/audioModel";
 import { CountPrediction, loadCountModel } from "../ml/countModel";
 import { toFeatureRate } from "../ml/features";
-import { COUNT_MODEL_RULE, USE_COUNT_MODEL } from "../ml/flags";
+import { COUNT_MODEL_RULE, USE_AUDIO_MODEL, USE_COUNT_MODEL } from "../ml/flags";
 import { Line, lineBeats } from "../music/rhythm";
 import { CountSession, HeardWord, VoskEvent } from "../speech/CountRecognizer";
 import { refineWordTimes } from "../speech/wordTiming";
@@ -64,11 +59,24 @@ export interface TakeDebug {
   /** The count-word model's prediction at every expected count, when it was on. */
   countModel: { expectedTime: number; label: string; prediction: CountPrediction }[] | null;
   vosk: VoskEvent[];
+  /** What graded the take: the audio model, or the clap detector, voicing rules and Vosk. */
+  grader: "audio-model" | "rules";
+  /** The audio model's events (seconds into the recording), when it graded. */
+  audioModel: { trainedOn: string | null; events: AudioEvents } | null;
   /** Exactly what the grader was given (offsets applied). */
-  graderInput: { claps: number[]; words: TakeWord[] | null; frames: TakeFrame[] | null };
+  graderInput: {
+    claps: number[];
+    words: TakeWord[] | null;
+    frames: TakeFrame[] | null;
+  };
   /** When the end timer fired vs. when it was due (context clock). */
   finish: { due: number; fired: number | null };
-  video: { mimeType: string; startedAt: number | null; startedPerf: number | null; error?: string } | null;
+  video: {
+    mimeType: string;
+    startedAt: number | null;
+    startedPerf: number | null;
+    error?: string;
+  } | null;
 }
 
 export interface RawTake {
@@ -145,7 +153,7 @@ export class TakeRunner {
     private readonly bpm: number,
     private readonly settings: Settings,
     model: Model | null,
-    private readonly callbacks: TakeCallbacks = {}
+    private readonly callbacks: TakeCallbacks = {},
   ) {
     const secPerBeat = 60 / bpm;
     const beatsPerMeasure = line.timeSig.num;
@@ -166,6 +174,7 @@ export class TakeRunner {
     if (activityInfo(settings.activity).countMode && model) {
       this.speech = new CountSession(model, audioEngine.sampleRate, callbacks.onPartialWords);
     }
+    if (USE_AUDIO_MODEL) loadAudioModel();
     this.done = new Promise((resolve) => (this.resolveDone = resolve));
   }
 
@@ -211,11 +220,13 @@ export class TakeRunner {
     const cam = handTracker.cameraStream;
     if (!cam || typeof MediaRecorder === "undefined") return;
     const tracks = [...cam.getVideoTracks(), ...(audioEngine.micStream?.getAudioTracks() ?? [])];
-    const mimeType =
-      ["video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
+    const mimeType = ["video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
     this.videoInfo = { mimeType, startedAt: null, startedPerf: null };
     try {
-      const rec = new MediaRecorder(new MediaStream(tracks), { mimeType, videoBitsPerSecond: TRAINING ? 5_000_000 : 2_500_000 });
+      const rec = new MediaRecorder(new MediaStream(tracks), {
+        mimeType,
+        videoBitsPerSecond: TRAINING ? 5_000_000 : 2_500_000,
+      });
       rec.ondataavailable = (e) => e.data.size && this.videoChunks.push(e.data);
       rec.onstart = () => {
         if (!this.videoInfo) return;
@@ -318,7 +329,7 @@ export class TakeRunner {
     const rec = this.recording;
     let words: RawWord[] = heard.map((w) => ({ ...w, voskTime: w.time }));
     const info = activityInfo(this.settings.activity);
-    const vf = (this.speech || info.sing) && rec.length ? voiceFrames(rec.data, rec.sampleRate, rec.startTime ?? 0) : null;
+    const vf = (info.countMode || info.sing) && rec.length ? voiceFrames(rec.data, rec.sampleRate, rec.startTime ?? 0) : null;
     const segments: VoicedSegment[] = vf ? voicedSegments(vf) : [];
     const runs: VoiceRun[] = vf ? voiceRuns(vf) : [];
     if (words.length && segments.length) {
@@ -332,10 +343,25 @@ export class TakeRunner {
     const speechOff = this.settings.speechOffset ?? micOff + 0.02;
     const videoOff = this.settings.videoOffset ?? 0;
 
-    const claps = this.candidates.filter((c) => c.isClap && !c.gated).map((c) => c.time - micOff);
-    const takeWords: TakeWord[] | null = this.speech
-      ? words.map((w) => ({ word: w.word, label: w.label, time: w.time - speechOff }))
+    // The audio model grades what the mic heard; without it (?model=rules, or
+    // it failed to load) the clap detector, voicing rules and Vosk do.
+    const audioModel = USE_AUDIO_MODEL && rec.length ? await loadAudioModel() : null;
+    if (this.cancelled) return;
+    const fromModel = audioModel
+      ? modelGraderInput(audioModel, rec.data, rec.sampleRate, rec.startTime ?? 0, { mic: micOff, speech: speechOff })
       : null;
+
+    const claps = fromModel ? fromModel.input.claps : this.candidates.filter((c) => c.isClap && !c.gated).map((c) => c.time - micOff);
+    const takeWords: TakeWord[] | null =
+      fromModel && info.countMode
+        ? fromModel.input.words
+        : this.speech
+          ? words.map((w) => ({
+              word: w.word,
+              label: w.label,
+              time: w.time - speechOff,
+            }))
+          : null;
     const frames: TakeFrame[] | null = recording
       ? recording.frames.map((f) => ({
           time: f.time - videoOff,
@@ -346,7 +372,7 @@ export class TakeRunner {
       : null;
 
     // Count-word model (A/B: ?model=counts), for counts hidden under claps.
-    const model = USE_COUNT_MODEL && info.countMode && info.claps ? await loadCountModel() : null;
+    const model = USE_COUNT_MODEL && !fromModel && info.countMode && info.claps ? await loadCountModel() : null;
     if (this.cancelled) return;
     const x16 = model && rec.length ? toFeatureRate(rec.data, rec.sampleRate) : null;
     const t0 = rec.startTime ?? 0;
@@ -368,8 +394,11 @@ export class TakeRunner {
       claps: info.claps ? claps : [],
       words: takeWords,
       frames,
+      // Counts hidden under claps: the audio model hears them itself. The rules'
+      // voice detector (without it) takes a clap's ring for a voice onset, so
+      // it would credit counts on clap beats even when nothing was said.
       voiceOnsetNear:
-        vf && info.claps
+        vf && info.claps && !fromModel
           ? (t) => {
               const o = voiceOnsetNear(vf, t + speechOff, runs);
               return o === null ? null : o - speechOff;
@@ -377,13 +406,27 @@ export class TakeRunner {
           : undefined,
       countModelAt,
       countModelRule: COUNT_MODEL_RULE,
-      sungOnsets: info.sing && vf ? sungOnsets(vf, segments).map((t) => t - speechOff) : undefined,
-      voicedSpans: info.sing ? runs.map((r): [number, number] => [r.start - speechOff, r.end - speechOff]) : undefined,
+      sungOnsets: !info.sing
+        ? undefined
+        : fromModel
+          ? fromModel.input.sungOnsets
+          : vf
+            ? sungOnsets(vf, segments).map((t) => t - speechOff)
+            : undefined,
+      voicedSpans:
+        !info.sing && !info.countMode
+          ? undefined
+          : fromModel
+            ? fromModel.input.voicedSpans
+            : runs.map((r): [number, number] => [r.start - speechOff, r.end - speechOff]),
     });
 
     let snapshots: HandSnapshot[] = [];
     if (recording) {
-      const corrected = recording.snapshots.map((s) => ({ ...s, time: s.time - videoOff }));
+      const corrected = recording.snapshots.map((s) => ({
+        ...s,
+        time: s.time - videoOff,
+      }));
       const wanted = result.notes.flatMap((n) => (n.time !== undefined ? [n.expectedTime, n.time] : [n.expectedTime]));
       result.notes.forEach((n) => {
         if (n.hold?.until) wanted.push(n.hold.until);
@@ -418,9 +461,21 @@ export class TakeRunner {
       voiceRuns: runs,
       countModel:
         countModelAt && result.counts
-          ? result.counts.map((c) => ({ expectedTime: c.expectedTime, label: c.label, prediction: countModelAt(c.expectedTime) }))
+          ? result.counts.map((c) => ({
+              expectedTime: c.expectedTime,
+              label: c.label,
+              prediction: countModelAt(c.expectedTime),
+            }))
           : null,
       vosk: this.speech?.log ?? [],
+      grader: fromModel ? "audio-model" : "rules",
+      audioModel:
+        fromModel && audioModel
+          ? {
+              trainedOn: audioModel.file.trainedOn ?? null,
+              events: fromModel.events,
+            }
+          : null,
       graderInput: { claps, words: takeWords, frames },
       finish: { due: this.finishDue, fired },
       video: this.videoInfo,
@@ -439,7 +494,7 @@ export class TakeRunner {
         debug,
       },
       frames,
-      usedSpeech: !!this.speech,
+      usedSpeech: !!takeWords,
       usedCamera: !!recording,
       micOffset: micOff,
     });

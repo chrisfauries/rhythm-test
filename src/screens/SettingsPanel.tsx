@@ -3,6 +3,7 @@ import { listMicrophones } from "../audio/AudioEngine";
 import { CameraPreview } from "../components/LiveWidgets";
 import { Modal, Pill } from "../components/ui";
 import { DEFAULT_SETTINGS, Settings } from "../state/settings";
+import { openPage, SAVED_TOOLS, saveTools, TOOLS, URL_OVERRIDES } from "../state/tools";
 import { DEFAULT_HAND_TUNING, handTracker } from "../video/HandTracker";
 
 interface Props {
@@ -37,7 +38,9 @@ const fmtMs = (s: number | null) => (s === null ? "default" : `${Math.round(s * 
 const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
   const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
   useEffect(() => {
-    listMicrophones().then(setMics).catch(() => setMics([]));
+    listMicrophones()
+      .then(setMics)
+      .catch(() => setMics([]));
   }, []);
 
   const t = settings.handTuning;
@@ -107,7 +110,18 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
             <span className="text-xs font-mono text-slate-500">
               claps {fmtMs(settings.micOffset)} · counts {fmtMs(settings.speechOffset)} · camera {fmtMs(settings.videoOffset)}
             </span>
-            <Pill onClick={() => update({ micOffset: null, speechOffset: null, videoOffset: null, clapBias: null })}>Reset</Pill>
+            <Pill
+              onClick={() =>
+                update({
+                  micOffset: null,
+                  speechOffset: null,
+                  videoOffset: null,
+                  clapBias: null,
+                })
+              }
+            >
+              Reset
+            </Pill>
           </Row>
         </div>
 
@@ -128,9 +142,8 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
             <div className="py-3">
               <p className="font-semibold mb-1">Tune hand detection</p>
               <p className="text-xs text-slate-500 mb-2">
-                Clap and hold your hands together, then pull them apart. The “gap” is the distance between palms in
-                hand-lengths. Set “together” just above the gap you see while holding, and “apart” comfortably below the gap
-                when your hands are open.
+                Clap and hold your hands together, then pull them apart. The “gap” is the distance between palms in hand-lengths. Set
+                “together” just above the gap you see while holding, and “apart” comfortably below the gap when your hands are open.
               </p>
               <CameraPreview showDistance />
               <div className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-2 mt-3 text-sm">
@@ -143,7 +156,12 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
                   value={t.togetherBelow}
                   onChange={(e) => {
                     const v = parseFloat(e.target.value);
-                    update({ handTuning: { togetherBelow: v, apartAbove: Math.max(t.apartAbove, v + 0.1) } });
+                    update({
+                      handTuning: {
+                        togetherBelow: v,
+                        apartAbove: Math.max(t.apartAbove, v + 0.1),
+                      },
+                    });
                   }}
                   className="accent-walsh-gold"
                 />
@@ -157,7 +175,12 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
                   value={t.apartAbove}
                   onChange={(e) => {
                     const v = parseFloat(e.target.value);
-                    update({ handTuning: { apartAbove: v, togetherBelow: Math.min(t.togetherBelow, v - 0.1) } });
+                    update({
+                      handTuning: {
+                        apartAbove: v,
+                        togetherBelow: Math.min(t.togetherBelow, v - 0.1),
+                      },
+                    });
                   }}
                   className="accent-walsh-green"
                 />
@@ -169,11 +192,50 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
             </div>
           )}
 
+          <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mt-5">Tools</h3>
+          <Row
+            label="Grading by"
+            hint={`The audio model listens to the whole take. Rules is the older clap detector, voicing rules and speech recognition.${
+              URL_OVERRIDES.grader ? " The page's address (?model=) is overriding this right now." : ""
+            } Changing it reloads the page.`}
+          >
+            <Pill selected={TOOLS.grader === "model"} onClick={() => saveTools({ grader: "model" })}>
+              Audio model
+            </Pill>
+            <Pill
+              selected={TOOLS.grader === "rules" && !TOOLS.countModel}
+              onClick={() => saveTools({ grader: "rules", countModel: false })}
+            >
+              Rules
+            </Pill>
+            <Pill selected={TOOLS.grader === "rules" && TOOLS.countModel} onClick={() => saveTools({ grader: "rules", countModel: true })}>
+              Rules + count model
+            </Pill>
+          </Row>
+          <Row
+            label="Training mode"
+            hint={`Adds a “Capture” button after each take that saves everything about it as a zip.${
+              URL_OVERRIDES.training && !SAVED_TOOLS.training ? " On right now because of ?training in the address." : ""
+            } Changing it reloads the page.`}
+          >
+            <Toggle on={TOOLS.training} onChange={(v) => saveTools({ training: v })} />
+          </Row>
+          <Row
+            label="Other pages"
+            hint="Open in a new tab. Labeler: mark what really happened in a capture. Replay: open a capture or debug zip and see its results, re-graded."
+          >
+            <Pill onClick={() => openPage("label")}>Labeler</Pill>
+            <Pill onClick={() => openPage("results")}>Replay a take</Pill>
+          </Row>
+
           <div className="mt-6">
             <Pill
               onClick={() => {
                 if (window.confirm("Reset all settings (including calibration) to defaults?")) {
-                  update({ ...DEFAULT_SETTINGS, studentName: settings.studentName });
+                  update({
+                    ...DEFAULT_SETTINGS,
+                    studentName: settings.studentName,
+                  });
                 }
               }}
             >
