@@ -50,6 +50,13 @@
 - Collect varied captures (`?training`): different students, rooms, mics, speaker metronome, 8th/16th lines with "e" and "a", deliberate mistakes.
 - Retrain the count model as captures arrive; watch the held-out numbers, not the training ones.
 - Upload captures straight to Google Drive (student sign-in, resumable upload for video) instead of downloading zips.
+- **Use context when the model is unsure of a word** (user, 2026-10-19). Done in the grader, not the model: the model already gives every word's probability at each onset (`probs` in src/ml/audioModel.ts), but `modelGraderInput` keeps only the top word. Two ideas to try:
+  1. *Neighbors:* when there's no clear winner (60% "e", 40% "&"), let the words heard just before and after decide ("1 _ & a" makes the gap an "e").
+  2. *The music:* weigh each word by what's written at that moment, so a near-tie goes to the written word. A clearly said wrong word still wins, so "1 e e a" is still caught.
+  - Keep the model a pure "what did I hear" detector: context learned inside it would learn to overrule real mistakes, with no setting to control how much.
+  - The feedback detectors that look for what was actually said, not written (morph: "1 la li" said for "1 e & a"), keep the raw words, or the boost hides the very mistake.
+  - Tune on both measures at once: false flags on the clean takes (`ml:grade-takes dataset/chris_fauries --all`) must drop, and wrong words caught in the synthetic mistake takes must stay. Without the second, ignoring mistakes would look like an improvement.
+
 - **Lip movement to confirm counts under claps** (user idea, 2026-10-18). Counting while clapping is the hardest case: the clap masks the word. The camera already sees the face.
   - Don't aim for full lip reading. Visual speech recognition models (AV-HuBERT, Auto-AVSR) are large, made for sentences, and poor at single words with no context. We only need two smaller things: *when* a syllable started, and *which of a few words* it could be.
   - Timing: MediaPipe Face Landmarker (in @mediapipe/tasks-vision, already loaded) gives lip points and blendshapes (jawOpen, mouthClose, mouthFunnel, mouthPucker) every frame. Mouth-opening onsets give syllable times no clap can hide; that alone confirms "said something here, in time" when the audio model is unsure.

@@ -156,6 +156,14 @@ batches, mixed precision, or holding out groups of takes (e.g. 5 folds) instead 
   (v3: 29), 102 false flags (v3: 109); the "&" said on rests is now heard (10-A 91% → 99%,
   10.5-D 99% → 100%). Still weak: "uh" (heard as "&"; 2 of 18 right held out) and "e" (5 of 26):
   rare in the real takes.
+- **v5 (2026-10-19), shipped:** 120 real takes (Chris's 41 new ones added, 10 of them in 6/8) and
+  all 5,486 generated takes regenerated under the 6/8 conventions (tempo and clicks by the dotted
+  quarter, dotted-quarter tempos 40-90; a dotted quarter counted "1" or "4" alone). Seed 0 of three
+  (6000 steps, ~9 min each). Held out on real takes: counts under claps 90.9%, clean 89.4%, sung
+  99.1%, claps 99.9%, count-only with claps mixed in 84.9% (not the same held-out set as v4's).
+  Grading Chris's 109 clean takes: mean 98%, 46 at 100%; the 41 new ones (unseen by v4, trained on
+  by v5) 90.1% → 97.0%, the 10 in 6/8 80.1% → 99.4% (v4 heard fast eighths in 6/8 as "la"/"li"/"&").
+  Seeds 1 and 2: 43 and 45 at 100%. Backups: session scratchpad `audio-v5-seed{0,1,2}.json`.
 - Steps: `npm run ml:audio-dataset`, then `npm run ml:train-audio`, then
   `node ml/check-audio-model.js` (checks the TypeScript runtime against PyTorch).
   `LIMIT_TAKES=n` trains on n takes per fold (learning curves); runs go in `training-log-audio.csv`.
