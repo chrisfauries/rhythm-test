@@ -72,7 +72,7 @@ const SING_DIP_DB = [-16, -9]; // the dip into each new "D" (measured: about -11
 const VOICED_PER_VARIANT = 12;
 
 let seed = 20261017;
-const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+const rand = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
 const uniform = (a, b) => a + rand() * (b - a);
 const pick = (xs) => xs[Math.floor(rand() * xs.length)];
 const gauss = () => Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(2 * Math.PI * rand());
@@ -206,7 +206,10 @@ const sungNote = (clip, body, pitch) => {
  */
 const perform = (line, plan, secPerQ) => {
   const notes = R.expectedClaps(line);
-  const clapGap = gaps(notes.map((c) => c.pos), secPerQ);
+  const clapGap = gaps(
+    notes.map((c) => c.pos),
+    secPerQ,
+  );
   const claps = plan.claps ? notes.map((c) => ({ pos: c.pos, t: c.pos * secPerQ + humanize(clapGap(c.pos)) })) : [];
   // Each person has their own lag from clap (or beat) to vowel; it wobbles a little.
   const range = plan.claps ? CLAP_TO_VOWEL : VOWEL_AFTER_BEAT;
@@ -222,7 +225,10 @@ const perform = (line, plan, secPerQ) => {
   }
   if (!plan.countMode) return { claps, words: [] };
   const counts = R.expectedCounts(line, plan.countMode);
-  const countGap = gaps(counts.map((c) => c.pos), secPerQ);
+  const countGap = gaps(
+    counts.map((c) => c.pos),
+    secPerQ,
+  );
   const words = counts.map((c, i) => {
     const clap = claps.find((k) => Math.abs(k.pos - c.pos) < 1e-6);
     const t = clap ? clap.t + lagNow() : c.pos * secPerQ + lagNow() + humanize(countGap(c.pos));
@@ -289,7 +295,7 @@ const addMistakes = (perf, secPerQ, lineSec) => {
     if (kind === "rushing" || kind === "dragging") {
       // Gradually faster (or slower): up to 4-10% off by the end of the line.
       const amount = (kind === "rushing" ? -1 : 1) * uniform(0.04, 0.1);
-      for (const e of [...perf.claps, ...perf.words]) e.t += amount * (e.t * e.t) / (2 * lineSec);
+      for (const e of [...perf.claps, ...perf.words]) e.t += (amount * (e.t * e.t)) / (2 * lineSec);
       done.push({ type: kind, percent: Math.round(amount * 100) });
     }
   }
@@ -305,7 +311,18 @@ const addMistakes = (perf, secPerQ, lineSec) => {
  * Changes the performance in place; returns what was done ([] if this line
  * has nothing it applies to).
  */
-const STRUCTURAL = ["gave-up", "stopped", "restart", "late-start", "early-start", "morph-triplet", "morph-swing", "held-beat-clap", "tie-clap", "cut-short"];
+const STRUCTURAL = [
+  "gave-up",
+  "stopped",
+  "restart",
+  "late-start",
+  "early-start",
+  "morph-triplet",
+  "morph-swing",
+  "held-beat-clap",
+  "tie-clap",
+  "cut-short",
+];
 const STRUCTURAL_SHARE = 1 / 3;
 const addStructural = (perf, line, secPerQ, lineSec, endSec) => {
   const beat = R.beatLength(line.timeSig);
@@ -381,7 +398,12 @@ const addStructural = (perf, line, secPerQ, lineSec, endSec) => {
     }
     if (kind === "morph-swing") {
       // Every pair of even eighths comes out long-short.
-      const ands = notes.filter((n) => Math.abs(frac(n.pos) - 0.5) < 1e-6 && notes.some((m) => Math.abs(m.pos - (n.pos - beat / 2)) < 1e-6) && Math.abs(n.len - beat / 2) < 1e-6);
+      const ands = notes.filter(
+        (n) =>
+          Math.abs(frac(n.pos) - 0.5) < 1e-6 &&
+          notes.some((m) => Math.abs(m.pos - (n.pos - beat / 2)) < 1e-6) &&
+          Math.abs(n.len - beat / 2) < 1e-6,
+      );
       if (ands.length < 3) continue;
       const d = uniform(0.14, 0.2) * beatSec;
       for (const e of all()) if (e.pos !== null && ands.some((n) => Math.abs(n.pos - e.pos) < 1e-6)) e.t += d;
@@ -487,7 +509,10 @@ const BEDS = {
   /** A running tap or kettle: bright, bubbling noise, for part of the take. */
   water: (n) => {
     const len = Math.min(n, Math.round(uniform(0.4, 1) * n));
-    const x = highpass(new Float32Array(len).map(() => rand() * 2 - 1), uniform(600, 1500));
+    const x = highpass(
+      new Float32Array(len).map(() => rand() * 2 - 1),
+      uniform(600, 1500),
+    );
     lowpass(x, uniform(3500, 7000));
     let env = 0;
     for (let i = 0; i < len; i++) {
@@ -542,13 +567,18 @@ const speakLine = (out, words, speaker, lineStart, voiceLevel) => {
     const clip = gap < 0.3 ? pick(clips.slice(0, 3)) : pick(clips);
     const natural = clip.seconds - clip.onset;
     let body;
-    if (next && w.held) body = gap + 0.04; // "ooonnne-two": straight into the next number
-    else if (gap < 0.2) body = gap + 0.03; // "1e&a" as one sound
+    if (next && w.held)
+      body = gap + 0.04; // "ooonnne-two": straight into the next number
+    else if (gap < 0.2)
+      body = gap + 0.03; // "1e&a" as one sound
     else if (gap < 0.45) body = gap * Math.min(1, fill * uniform(0.9, 1.1));
     else body = Math.min(natural, gap * 0.85);
     const offbeat = !NUMBERS.has(w.label);
     const fast = gap < 0.3 || (i > 0 && w.t - words[i - 1].t < 0.3);
-    const word = spoken(clip, body, { soften: fast ? uniform(0.3, 0.7) : 0, semitones: offbeat ? offbeatPitch + gauss() * 0.3 : gauss() * 0.4 });
+    const word = spoken(clip, body, {
+      soften: fast ? uniform(0.3, 0.7) : 0,
+      semitones: offbeat ? offbeatPitch + gauss() * 0.3 : gauss() * 0.4,
+    });
     const gain = voiceLevel * (offbeat ? offbeatGain : 1) * uniform(0.85, 1.15);
     // A connected word ends just after the next one's vowel starts (under that word's consonant).
     const endSec = next ? word.onset + body + 0.02 : Infinity;
@@ -599,10 +629,13 @@ const singLine = (out, words, speaker, lineStart, voiceLevel) => {
 /** Builds one track: audio and its capture-zip contents. */
 const makeTake = (ex, plan) => {
   const ts = ex.line.timeSig;
+  // As the app (TakeRunner): the tempo is in pulses (dotted quarters in 6/8),
+  // with a click per pulse and four count-in clicks, whatever the meter.
   const bpm = plan.bpm;
-  const secPerBeat = 60 / bpm;
+  const beatsPerClick = R.beatsPerPulse(ts);
+  const secPerBeat = 60 / bpm / beatsPerClick;
   const secPerQ = secPerBeat / R.beatLength(ts);
-  const countInBeats = ts.num;
+  const countInBeats = 4 * beatsPerClick;
   const lineBeats = R.lineBeats(ex.line);
   const lineStart = LEAD + countInBeats * secPerBeat;
   const lineSec = lineBeats * secPerBeat;
@@ -626,7 +659,11 @@ const makeTake = (ex, plan) => {
     const bed = BEDS[b](out.length, voiceLevel);
     addBed(out, bed.x, bed.db, bed.at ?? 0, b === "water" ? 0.4 : 0.3);
   }
-  const clicks = Array.from({ length: countInBeats + lineBeats }, (_, i) => ({ i, t: LEAD + i * secPerBeat, accent: i % countInBeats === 0 }));
+  const clicks = Array.from({ length: (countInBeats + lineBeats) / beatsPerClick }, (_, i) => ({
+    i,
+    t: LEAD + i * beatsPerClick * secPerBeat,
+    accent: i < 4 ? i === 0 : ((i - 4) * beatsPerClick) % ts.num === 0,
+  }));
   if (plan.metronome) {
     const level = dB(uniform(...CLICK_DB));
     for (const c of clicks) mixIn(out, c.accent ? CLICKS.accent : CLICKS.normal, c.t, level);
@@ -651,6 +688,7 @@ const makeTake = (ex, plan) => {
     secPerBeat,
     countInBeats,
     beatsPerMeasure: ts.num,
+    beatsPerClick,
     countInStartWav: LEAD,
     lineStartWav: lineStart,
     lineEndWav: lineStart + lineSec,
@@ -660,15 +698,29 @@ const makeTake = (ex, plan) => {
     version: 1,
     synthetic: true,
     exercise,
-    settings: { tempo: bpm, activity: plan.activity, strictness: "normal", countInMeasures: 1, metronomeDuringLine: !!plan.metronome },
+    settings: { tempo: bpm, activity: plan.activity, strictness: "normal", metronomeDuringLine: !!plan.metronome },
     wavStartCtx: 0,
     offsets: { mic: 0, speech: 0, video: 0 },
     timing,
     clicks: clicks.map((c) => ({ i: c.i, ctx: c.t, wav: c.t })),
     audio: { sampleRate: SR, seconds: +(out.length / SR).toFixed(4) },
     grader: {
-      notes: R.expectedClaps(ex.line).map((c) => ({ id: c.id, measure: c.measure, index: c.index, pos: c.pos, len: c.len, expectedTime: lineStart + c.pos * secPerQ })),
-      counts: plan.countMode ? R.expectedCounts(ex.line, plan.countMode).map((c) => ({ id: c.id, pos: c.pos, label: c.label, expectedTime: lineStart + c.pos * secPerQ })) : [],
+      notes: R.expectedClaps(ex.line).map((c) => ({
+        id: c.id,
+        measure: c.measure,
+        index: c.index,
+        pos: c.pos,
+        len: c.len,
+        expectedTime: lineStart + c.pos * secPerQ,
+      })),
+      counts: plan.countMode
+        ? R.expectedCounts(ex.line, plan.countMode).map((c) => ({
+            id: c.id,
+            pos: c.pos,
+            label: c.label,
+            expectedTime: lineStart + c.pos * secPerQ,
+          }))
+        : [],
       rests: [],
     },
   };
@@ -718,7 +770,17 @@ for (const page of pages) {
   // 1) Every line, clapped: claps alone, and claps with the metronome.
   for (const ex of page.exercises) {
     for (const variant of ["claps", "claps+metronome"]) {
-      for (const job of withTwins({ set: "claps", page: page.id, ex, variant, activity: "clap", claps: true, metronome: variant.includes("metronome"), bpm: tempo() })) jobs.push(job);
+      for (const job of withTwins({
+        set: "claps",
+        page: page.id,
+        ex,
+        variant,
+        activity: "clap",
+        claps: true,
+        metronome: variant.includes("metronome"),
+        bpm: tempo(),
+      }))
+        jobs.push(job);
     }
   }
   // 2) Lines from the page, counted or sung by the voices in turn (each voice gets about the same share).
@@ -754,6 +816,8 @@ if (!ONLY_PAGES) fs.rmSync(OUT, { recursive: true, force: true });
 const csv = ["set,page,line,file,activity,variant,speaker,bpm,seconds,background,performance,mistakes"];
 let seconds = 0;
 const started = Date.now();
+// Compound meters: the tempo is the dotted quarter, so keep it in a dotted-quarter range (40-90).
+for (const job of jobs) if (R.isCompound(job.ex.line.timeSig)) job.bpm = Math.round(40 + (job.bpm - TEMPO[0]) / 2);
 jobs.forEach((job, n) => {
   const safeId = job.ex.id.replace(/[^\w.-]/g, "_");
   job.name = [safeId, job.speaker, job.variant.replace(/\+/g, "-"), `${job.bpm}bpm`, job.mistakes && "mistakes"].filter(Boolean).join("_");
@@ -772,11 +836,37 @@ jobs.forEach((job, n) => {
   if (WAV) fs.writeFileSync(path.join(dir, `${job.name}.wav`), wav);
   const secs = take.out.length / SR;
   seconds += secs;
-  const desc = take.mistakes.map((m) => m.type + (m.pos != null ? `@${+m.pos.toFixed(3)}` : "") + (m.said ? `:${m.expected}->${m.said}` : "") + (m.ms ? `:${m.ms}ms` : "") + (m.percent ? `:${m.percent}%` : "")).join(" ");
-  csv.push([job.set, job.page, job.ex.id, path.relative(OUT, path.join(dir, `${job.name}.zip`)).replace(/\\/g, "/"), job.activity, job.variant, job.speaker ?? "", job.bpm, secs.toFixed(1), take.background.join("+"), take.manifest.performance, `"${desc}"`].join(","));
+  const desc = take.mistakes
+    .map(
+      (m) =>
+        m.type +
+        (m.pos != null ? `@${+m.pos.toFixed(3)}` : "") +
+        (m.said ? `:${m.expected}->${m.said}` : "") +
+        (m.ms ? `:${m.ms}ms` : "") +
+        (m.percent ? `:${m.percent}%` : ""),
+    )
+    .join(" ");
+  csv.push(
+    [
+      job.set,
+      job.page,
+      job.ex.id,
+      path.relative(OUT, path.join(dir, `${job.name}.zip`)).replace(/\\/g, "/"),
+      job.activity,
+      job.variant,
+      job.speaker ?? "",
+      job.bpm,
+      secs.toFixed(1),
+      take.background.join("+"),
+      take.manifest.performance,
+      `"${desc}"`,
+    ].join(","),
+  );
   if ((n + 1) % 500 === 0) console.log(`  ${n + 1}/${jobs.length} (${((Date.now() - started) / 1000).toFixed(0)} s)`);
 });
 fs.writeFileSync(path.join(OUT, "index.csv"), csv.join("\n") + "\n");
 const count = (set) => jobs.filter((j) => j.set === set).length;
 const withMistakes = jobs.filter((j) => j.mistakes).length;
-console.log(`${jobs.length} tracks (${count("claps")} clapped, ${count("voices")} counted or sung by ${voices.length} voices; ${withMistakes} with mistakes), ${(seconds / 3600).toFixed(1)} h of audio, in ${((Date.now() - started) / 1000).toFixed(0)} s -> ${OUT}`);
+console.log(
+  `${jobs.length} tracks (${count("claps")} clapped, ${count("voices")} counted or sung by ${voices.length} voices; ${withMistakes} with mistakes), ${(seconds / 3600).toFixed(1)} h of audio, in ${((Date.now() - started) / 1000).toFixed(0)} s -> ${OUT}`,
+);

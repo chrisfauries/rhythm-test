@@ -31,8 +31,7 @@ const STEPS: Record<StepId, { title: string; line: string; say: string[]; how: R
     say: ["1", "2", "3", "4"],
     how: (
       <>
-        <b>Clap on every click</b> for two measures, without counting out loud. Mix in some soft claps with the loud
-        ones.
+        <b>Clap on every click</b> for two measures, without counting out loud. Mix in some soft claps with the loud ones.
       </>
     ),
   },
@@ -84,7 +83,7 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
       cancelAnimationFrame(rafRef.current);
       runnerRef.current?.cancel();
     },
-    []
+    [],
   );
 
   const camera = settings.useCamera && handTracker.running;
@@ -98,7 +97,6 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
       CAL_BPM,
       {
         ...settings,
-        countInMeasures: 1,
         metronomeDuringLine: true,
         micOffset: 0,
         speechOffset: 0,
@@ -106,7 +104,7 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
         activity: step === "counts" ? "count-notes" : "clap",
         useCamera: step === "claps" && settings.useCamera,
       },
-      getModelState().model
+      getModelState().model,
     );
     runnerRef.current = runner;
     runner.start();
@@ -115,7 +113,7 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
       const now = audioEngine.audibleTime();
       if (now < t.lineStart) {
         const b = Math.floor((now - t.countInStart) / t.secPerBeat);
-        setBeat(b < 0 ? "" : ["1", "2", "Ready", "Go!"][b] ?? "");
+        setBeat(b < 0 ? "" : (["1", "2", "Ready", "Go!"][b] ?? ""));
       } else if (now < t.lineEnd) {
         const sub = def.say.length / 4;
         const i = Math.floor(((now - t.lineStart) / t.secPerBeat) * sub);
@@ -147,7 +145,12 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
     const b = beats(o);
     // Every candidate counts here: the student is only clapping.
     const cands = o.raw.candidates.filter((c) => !c.gated && inLine(o)(c.time));
-    const r = calibrate(b, cands.map((c) => c.time), [], o.raw.frames.length ? o.raw.frames : null);
+    const r = calibrate(
+      b,
+      cands.map((c) => c.time),
+      [],
+      o.raw.frames.length ? o.raw.frames : null,
+    );
     const off = r.micOffset ?? 0;
     const onBeat = cands.filter((c) => b.some((t) => Math.abs(c.time - off - t) < 0.12));
     return {
@@ -175,9 +178,7 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
   };
 
   const bias = countStep ? countStep.learnedBias : settings.clapBias;
-  const clapsKept = clapStep
-    ? clapStep.clapScores.filter((s) => s + clapBias(bias, settings.clapSensitivity) > 0).length
-    : 0;
+  const clapsKept = clapStep ? clapStep.clapScores.filter((s) => s + clapBias(bias, settings.clapSensitivity) > 0).length : 0;
 
   const save = () => {
     const patch: Partial<Settings> = {};
@@ -210,7 +211,7 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
             onClick={() =>
               downloadDebugBundle(
                 { id: `calibrate-${id}`, title: STEPS[id].title, source: STEPS[id].line, timeSig: "4/4", tempo: CAL_BPM },
-                outcomes[id]!
+                outcomes[id]!,
               )
             }
           >
@@ -232,19 +233,14 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
         </h1>
       </div>
       <p className="text-sm text-slate-500 text-center max-w-2xl">
-        Sit where students will sit, with the speakers (or headphones) at normal volume. This measures the delays of
-        this computer's speakers, microphone, speech engine and camera, and learns what claps and counting sound like
-        in this room. It's saved on this computer.
+        Sit where students will sit, with the speakers (or headphones) at normal volume. This measures the delays of this computer's
+        speakers, microphone, speech engine and camera, and learns what claps and counting sound like in this room. It's saved on this
+        computer.
       </p>
 
       <div className="grid w-full gap-4 md:grid-cols-2">
         {stepCard("claps", !!clapStep, true)}
-        {stepCard(
-          "counts",
-          !!countStep,
-          speechReady,
-          speechReady ? undefined : "Wait for the voice engine to finish loading."
-        )}
+        {stepCard("counts", !!countStep, speechReady, speechReady ? undefined : "Wait for the voice engine to finish loading.")}
       </div>
 
       <div className={`grid w-full gap-4 ${camera && running === "claps" ? "md:grid-cols-2" : ""}`}>
@@ -263,7 +259,11 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
         <Card>
           <SectionLabel>Results</SectionLabel>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
-            <Stat label="Claps" value={ms(clapStep?.micOffset ?? null)} sub={clapStep ? `${clapStep.claps}/8 heard · was ${ms(settings.micOffset)}` : "step 1"} />
+            <Stat
+              label="Claps"
+              value={ms(clapStep?.micOffset ?? null)}
+              sub={clapStep ? `${clapStep.claps}/8 heard · was ${ms(settings.micOffset)}` : "step 1"}
+            />
             <Stat
               label="Counting"
               value={ms(countStep?.speechOffset ?? null)}
@@ -286,8 +286,8 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
           </div>
           {clapStep && clapStep.micOffset === null && (
             <p className="mt-3 text-sm text-rose-600">
-              Not enough claps were heard on the beat. Check the level meter moves when you clap, and that the right
-              microphone is chosen in Settings.
+              Not enough claps were heard on the beat. Check the level meter moves when you clap, and that the right microphone is chosen in
+              Settings.
             </p>
           )}
           {countStep && countStep.speechOffset === null && (
@@ -297,15 +297,12 @@ const CalibrateScreen: React.FC<Props> = ({ settings, onSave, onClose }) => {
           )}
           {clapStep && countStep && clapsKept < clapStep.clapScores.length - 1 && (
             <p className="mt-3 text-sm text-amber-600">
-              Some soft claps sound a lot like this voice. Students should clap a bit louder than they count, or move
-              the microphone closer to their hands.
+              Some soft claps sound a lot like this voice. Students should clap a bit louder than they count, or move the microphone closer
+              to their hands.
             </p>
           )}
           <div className="flex justify-center gap-3 mt-4">
-            <Button
-              onClick={save}
-              disabled={clapStep?.micOffset == null && countStep?.speechOffset == null && !countStep}
-            >
+            <Button onClick={save} disabled={clapStep?.micOffset == null && countStep?.speechOffset == null && !countStep}>
               Save
             </Button>
           </div>

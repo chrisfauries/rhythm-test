@@ -37,7 +37,11 @@ for (const zip of findZips(process.argv.slice(2).filter((a) => !a.startsWith("--
     const l = JSON.parse(files["labels.json"].toString("utf8"));
     const m = JSON.parse(files["manifest.json"].toString("utf8"));
     if (m.performance !== "as-written" || !("background" in m)) continue;
-    take = { activity: d.settings.activity, tempo: d.settings.tempo, onsets: l.events.filter((e) => e.type === "count").map((e) => ({ t: e.t })) };
+    take = {
+      activity: d.settings.activity,
+      tempo: 60 / d.timing.secPerBeat,
+      onsets: l.events.filter((e) => e.type === "count").map((e) => ({ t: e.t })),
+    };
   }
   if (!take || !take.onsets.length) continue;
   const kind = take.activity === "sing" ? "sing" : take.activity === "count-notes" ? "count" : null;
@@ -58,7 +62,10 @@ for (const zip of findZips(process.argv.slice(2).filter((a) => !a.startsWith("--
     for (let f = a; f < Math.min(b, a + 30); f++) peak = Math.max(peak, ve[f]);
     // Voiced share: frames from this onset to the next within 20 dB of the word's peak.
     // Longest silent stretch in the gap (frames more than 20 dB under the peak).
-    let voiced = 0, run = 0, longest = 0, dip = Infinity;
+    let voiced = 0,
+      run = 0,
+      longest = 0,
+      dip = Infinity;
     for (let f = a; f < b; f++) {
       if (db(ve[f]) > db(peak) - 20) [voiced, run] = [voiced + 1, 0];
       else longest = Math.max(longest, ++run);
@@ -79,11 +86,34 @@ for (const zip of findZips(process.argv.slice(2).filter((a) => !a.startsWith("--
 for (const kind of ["count", "sing"]) {
   console.log(`\n${kind}: ${rows[kind].length} word-to-word gaps`);
   console.log("  gap (beats)   n   seconds   voiced share (median, 25-75%)   longest silence (ms)   dip before next (dB)");
-  for (const [lo, hi] of [[0, 0.3], [0.3, 0.6], [0.6, 1.2], [1.2, 2.5], [2.5, 9]]) {
+  for (const [lo, hi] of [
+    [0, 0.3],
+    [0.3, 0.6],
+    [0.6, 1.2],
+    [1.2, 2.5],
+    [2.5, 9],
+  ]) {
     const r = rows[kind].filter((x) => x.beats >= lo && x.beats < hi);
     if (!r.length) continue;
     const f = (k, s = 1) => (median(r.map((x) => x[k])) * s).toFixed(k === "share" ? 2 : 0);
-    console.log(`  ${lo}-${hi}`.padEnd(14), String(r.length).padStart(4), median(r.map((x) => x.sec)).toFixed(2).padStart(8), `   ${f("share")} (${q(r.map((x) => x.share), 0.25).toFixed(2)}-${q(r.map((x) => x.share), 0.75).toFixed(2)})`.padEnd(34), f("gap", 1000).padStart(16), f("dip").padStart(22));
+    console.log(
+      `  ${lo}-${hi}`.padEnd(14),
+      String(r.length).padStart(4),
+      median(r.map((x) => x.sec))
+        .toFixed(2)
+        .padStart(8),
+      `   ${f("share")} (${q(
+        r.map((x) => x.share),
+        0.25,
+      ).toFixed(2)}-${q(
+        r.map((x) => x.share),
+        0.75,
+      ).toFixed(2)})`.padEnd(34),
+      f("gap", 1000).padStart(16),
+      f("dip").padStart(22),
+    );
   }
 }
-console.log(`\nsung pitch: note-to-note step median ${median(pitchSteps).toFixed(2)} semitones (90% under ${q(pitchSteps, 0.9).toFixed(2)}); spread within a take (10-90%) median ${median(pitchSpread).toFixed(2)} semitones`);
+console.log(
+  `\nsung pitch: note-to-note step median ${median(pitchSteps).toFixed(2)} semitones (90% under ${q(pitchSteps, 0.9).toFixed(2)}); spread within a take (10-90%) median ${median(pitchSpread).toFixed(2)} semitones`,
+);

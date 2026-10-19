@@ -66,6 +66,15 @@ export const measureLength = (ts: TimeSignature) => (ts.num * 4) / ts.den;
 /** Length of one counted beat in q-units (the time signature's bottom number). */
 export const beatLength = (ts: TimeSignature) => 4 / ts.den;
 
+/** Compound meters (6/8, 9/8, 12/8) are felt in dotted quarters: the pulse is three eighths. */
+export const isCompound = (ts: TimeSignature) => ts.den === 8 && ts.num % 3 === 0 && ts.num > 3;
+
+/** Counted beats in one pulse: the beat the tempo, the metronome, rest pulses and holds go by. */
+export const beatsPerPulse = (ts: TimeSignature) => (isCompound(ts) ? 3 : 1);
+
+/** Length of one pulse in q-units: a dotted quarter in 6/8, else the counted beat. */
+export const pulseLength = (ts: TimeSignature) => beatsPerPulse(ts) * beatLength(ts);
+
 export const noteLength = (n: RhythmNote, ts: TimeSignature) => {
   if (n.measureRest) return measureLength(ts);
   let len = BASE_Q[n.base];
@@ -307,15 +316,18 @@ export const expectedCounts = (line: Line, mode: CountMode): ExpectedCount[] => 
   const positions = new Map<number, number>();
   const add = (pos: number) => positions.set(Math.round(pos * 48), pos);
 
+  // Held notes and rests are counted by the felt beat: in 6/8 a dotted quarter
+  // is one beat, so it gets "1" (or "4") alone, not "1 2 3".
+  const pulse = pulseLength(line.timeSig);
   for (const c of expectedClaps(line)) {
     add(c.pos);
     // Keep counting the beats a long note is held through.
-    for (let b = Math.floor(c.pos / beat + EPS) + 1; b * beat < c.pos + c.len - EPS; b++) {
-      add(b * beat);
+    for (let b = Math.floor(c.pos / pulse + EPS) + 1; b * pulse < c.pos + c.len - EPS; b++) {
+      add(b * pulse);
     }
   }
   if (mode === "all") {
-    for (let b = 0; b < lineBeats(line); b++) add(b * beat);
+    for (let b = 0; b * pulse < lineLength(line) - EPS; b++) add(b * pulse);
     // Rests off the beat too: the "&" of an eighth rest.
     for (const p of placeNotes(line)) if (p.note.rest) add(p.pos);
   }

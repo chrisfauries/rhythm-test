@@ -81,7 +81,7 @@ for (const zip of findZips(folders.length ? folders : ["dataset/synthetic"])) {
   const words = ev.filter((e) => e.type === "count" && e.label !== "sing").map((e) => ({ word: e.label, label: e.label, time: e.t }));
   const result = A.analyzeTake({
     line: ex.line,
-    bpm: d.exercise.tempo,
+    bpm: 60 / d.timing.secPerBeat,
     startTime: d.timing.lineStart,
     activity,
     strictness: "normal",

@@ -55,8 +55,8 @@ function App() {
   }, [exercise, settings.tempo]);
 
   useEffect(() => {
-    handTracker.tuning = settings.handTuning;
-  }, [settings.handTuning]);
+    handTracker.tuning = settings.cameraModel === "pose" ? settings.poseTuning : settings.handTuning;
+  }, [settings.cameraModel, settings.poseTuning, settings.handTuning]);
 
   const replaceOutcome = useCallback((next: TakeOutcome | null) => {
     setOutcome((prev) => {
@@ -112,13 +112,7 @@ function App() {
       break;
     case PHASE.PERFORM:
       screen = (
-        <PerformScreen
-          key={takeKey}
-          exercise={exercise}
-          settings={settings}
-          onFinished={finished}
-          onCancel={() => setPhase(PHASE.SETUP)}
-        />
+        <PerformScreen key={takeKey} exercise={exercise} settings={settings} onFinished={finished} onCancel={() => setPhase(PHASE.SETUP)} />
       );
       break;
     case PHASE.RESULTS:
@@ -148,16 +142,8 @@ function App() {
   return (
     <div className="App flex flex-col w-full min-h-screen">
       {screen}
-      {showSettings && (
-        <SettingsPanel
-          settings={settings}
-          update={update}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
-      {showHistory && (
-        <HistoryPanel records={history.records} onClear={history.clear} onClose={() => setShowHistory(false)} />
-      )}
+      {showSettings && <SettingsPanel settings={settings} update={update} onClose={() => setShowSettings(false)} />}
+      {showHistory && <HistoryPanel records={history.records} onClear={history.clear} onClose={() => setShowHistory(false)} />}
     </div>
   );
 }

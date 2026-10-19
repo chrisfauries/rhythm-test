@@ -3,7 +3,7 @@ import { Biquad } from "../audio/biquad";
 import { encodeWav } from "../audio/Recording";
 import { BundleMeta, bundleEntries, roundAll } from "../debug/debugBundle";
 import { makeZip } from "../debug/zip";
-import { TakeOutcome } from "../session/TakeRunner";
+import { takeClicks, TakeOutcome } from "../session/TakeRunner";
 import { CAPTURE_FORMAT_VERSION } from "./mode";
 
 // A training capture: everything about one take in one zip.
@@ -78,8 +78,11 @@ const renderMetronome = (outcome: TakeOutcome, length: number, sampleRate: numbe
   const normal = clickSamples(sampleRate, CLICK_HZ.normal);
   const accent = clickSamples(sampleRate, CLICK_HZ.accent);
   const volume = outcome.raw.debug.settings.clickVolume;
+  const accents = takeClicks(outcome.timing, outcome.raw.debug.clickTimes.length * (outcome.timing.beatsPerClick ?? 1)).map(
+    (c) => c.accent,
+  );
   outcome.raw.debug.clickTimes.forEach((t, i) => {
-    const click = i % outcome.timing.beatsPerMeasure === 0 ? accent : normal;
+    const click = accents[i] ? accent : normal;
     const at = Math.round((t - t0) * sampleRate);
     for (let k = 0; k < click.length; k++) {
       if (at + k >= 0 && at + k < length) out[at + k] += click[k] * volume;
@@ -102,7 +105,7 @@ const decodeVideoAudio = async (video: Blob, sampleRate: number) => {
 export const defaultCaptureName = (exerciseId: string, activity: string, tempo: number, when = new Date()) => {
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())}_${p(when.getHours())}-${p(
-    when.getMinutes()
+    when.getMinutes(),
   )}-${p(when.getSeconds())}`;
   return `${exerciseId}_${activity}_${tempo}bpm_${stamp}`.replace(/[^\w.-]+/g, "-");
 };

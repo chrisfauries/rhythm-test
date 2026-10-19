@@ -5,6 +5,7 @@
   "dependencies": {
     "@mediapipe/drawing_utils": "^0.3.1675466124",
     "@mediapipe/hands": "^0.4.1675469240",
+    "@mediapipe/tasks-vision": "^1.1.1",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
@@ -34,7 +35,11 @@
     "ml:measure-voice": "sh ml/build.sh && node ml/measure-voice.js dataset/chris_fauries",
     "ml:grade-takes": "sh ml/build.sh && node ml/grade-takes.js",
     "ml:check-feedback": "sh ml/build.sh && node ml/check-feedback.js",
-    "ml:inject-mistakes": "sh ml/build.sh && node ml/inject-mistakes.js"
+    "ml:inject-mistakes": "sh ml/build.sh && node ml/inject-mistakes.js",
+    "ml:vision-prep": "node ml/vision-bench-prep.js dataset",
+    "ml:vision-run": "node ml/vision-bench-run.js",
+    "ml:vision-score": "sh ml/build.sh && node ml/vision-bench.js",
+    "ml:vision-tune": "sh ml/build.sh && node ml/vision-tune.js"
   },
   "eslintConfig": {
     "extends": [

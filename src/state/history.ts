@@ -67,7 +67,7 @@ export const toCsv = (records: TakeRecord[]) => {
       pct(r.hold),
       r.meanOffsetMs === null ? "" : String(r.meanOffsetMs),
       r.tendency ?? "",
-    ].map(esc)
+    ].map(esc),
   );
   return [header, ...rows].map((r) => r.join(",")).join("\n");
 };

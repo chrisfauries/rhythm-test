@@ -2,12 +2,7 @@
 
 ## Grading rules
 
-- **Rest pulses: every rest gets at least one pulse, whatever its length.**
-  - Rests longer than one beat can get more than one pulse.
-  - Today `analyzeTake` in [src/analysis/analyze.ts](src/analysis/analyze.ts) only expects pulses on rests of a beat or longer, one on each beat. Rests shorter than a beat get no pulse.
-  - To fix: expect one pulse at the start of every rest, and more on each later beat of a long rest.
-  - Decide what counts for a multi-beat rest: is one pulse enough, or should there be one per beat?
-  - Check the 0.15 s / 0.3 s search window for short rests. Fast eighth or sixteenth rests are closer together than that.
+- **Rest pulses and sustain** (done 2026-10-18, user's rule): every rest symbol gets a pulse at its start, eighth rests too, and a rest longer than a beat one on each beat; any note longer than a beat (dotted quarters too) gets its hold checked. With the pose tracker on 24 takes: rest pulses 98%, holds 98%. Still open: whether a multi-beat rest needs one pulse per beat or one is enough.
 - **Fast subdivisions blend: don't grade each syllable's onset** (user, 2026-10-17). At faster tempos, musicians count 16ths as one connected word ("oneanna"), so "e", "&" and "uh" have no clean start. Built: the grader credits blended runs (BLEND_GAP in analyze.ts). Chris's 68 captures are the "perfect take" test: anything flagged there is a grading or model error.
 - **Long notes: grade the forward motion.** Hands should stay together *and* move forward. Each held note now records how far the hands moved (`hold.motion`, not scored), and feedback asks for a push when they stay still. The threshold (under 0.15 hand lengths and 5% size change) is set below anything in Chris's takes and is uncalibrated: record a take with the hands deliberately still on long notes, and some students' takes, to set it.
 - **Feedback engine** ([src/analysis/feedback.ts](src/analysis/feedback.ts) and [src/analysis/feedback/](src/analysis/feedback/), 2026-10-18). The results page leads with the one tip that would help most next time, then up to three more, and a reason under each score.
@@ -37,6 +32,12 @@
 
 ## Camera
 
+- **Body pose is the default tracker** (2026-10-18; src/video/HandTracker.ts, Settings → Camera model). MediaPipe Pose Landmarker lite follows the arms, so both hands stay located while pressed together. On 24 of Chris's takes run through the app's own pipeline (`npm run ml:vision-tune`): clap contacts 98% (old hand model 67%), long notes held 97% (91%), "together" on rest beats 1% (34%), rest pulses 98% (93%); about 12-19 ms a frame on the desktop GPU. Thresholds: a hand = 0.45 of a forearm, together below 1.3 hands, apart above 1.5.
+  - Measure it on a Chromebook, and on other people (rerun `ml:vision-prep`, `ml:vision-run`, `ml:vision-score`, `ml:vision-tune` with their captures). Every benchmark take so far is Chris, one room, one camera.
+  - Early releases of long notes never happen in the benchmark takes, so "came apart early" isn't measured: record a few on purpose.
+  - Runs on the page's main thread like the old tracker; a Web Worker would keep the page smoother on slow machines.
+  - Next: a small gesture model on the pose points, trained with clap times from the audio as free labels.
+
 - The C920 delivers about 20 fps, and hands blur at contact.
   - Try asking the camera for 30 fps.
   - Try MediaPipe's full model instead of the lite one.
@@ -49,7 +50,13 @@
 - Collect varied captures (`?training`): different students, rooms, mics, speaker metronome, 8th/16th lines with "e" and "a", deliberate mistakes.
 - Retrain the count model as captures arrive; watch the held-out numbers, not the training ones.
 - Upload captures straight to Google Drive (student sign-in, resumable upload for video) instead of downloading zips.
-- Store pose (arm) and face/lip points alongside hand points; lip movement could confirm words under claps and tell whose voice it is in a band room.
+- **Lip movement to confirm counts under claps** (user idea, 2026-10-18). Counting while clapping is the hardest case: the clap masks the word. The camera already sees the face.
+  - Don't aim for full lip reading. Visual speech recognition models (AV-HuBERT, Auto-AVSR) are large, made for sentences, and poor at single words with no context. We only need two smaller things: *when* a syllable started, and *which of a few words* it could be.
+  - Timing: MediaPipe Face Landmarker (in @mediapipe/tasks-vision, already loaded) gives lip points and blendshapes (jawOpen, mouthClose, mouthFunnel, mouthPucker) every frame. Mouth-opening onsets give syllable times no clap can hide; that alone confirms "said something here, in time" when the audio model is unsure.
+  - Which word: the count words look different. "one"/"two" round the lips, "three" shows the tongue, "four" puts teeth on the lip, "e" spreads, "&"/"uh" open the jaw. A small classifier on a few frames of blendshapes around each onset could tell them apart well enough to back up or overrule the audio model, not replace it.
+  - Test it offline first on captures we already have: run the face model over their videos with the vision bench (`ml/vision-bench-run.js`) and compare mouth onsets with the labeled count times. No new recordings needed to find out whether it works.
+  - Costs and risks: running face and pose together (Holistic, or face every other frame) on a Chromebook; the C920's ~20 fps is 50 ms a frame, coarse next to a 70 ms tolerance; faces small in frame at a distance; students looking down at the music or tilting their heads; hands crossing the face. A mouth moving also says nothing about who made a sound, though it could tell which voice is the student's in a noisy band room.
+  - Store face points in the debug bundle next to pose points, so later labeled takes can train the classifier.
 - Labeler: label sung "Da"s (sung takes have nothing to check yet), holds and forward motion.
 - A/B: a test suite that runs the rule-based and model approaches over labeled captures and reports accuracy by rhythm type, setting and mic. Then split the app so both can run side by side.
 - **Synthetic takes from other people's real takes** (user idea, 2026-10-17), once there are takes from 5–6 people besides Chris. Cut their labeled words, "Da"s and claps into sound banks, the way `ml/sound-bank.js` does with the TTS voices, and let `ml/synth.js` build new lines from them. Real voices, real rooms and real mics would replace or add to the speech-engine voices.

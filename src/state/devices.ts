@@ -41,14 +41,14 @@ export const useDevices = (settings: Settings): Devices => {
     setCamera("starting");
     setCameraError(null);
     try {
-      await handTracker.start(settings.liteHandModel);
+      await handTracker.start(settings.cameraModel === "pose" ? "pose" : settings.liteHandModel ? "hands-lite" : "hands-full");
       setCamera("on");
     } catch (err) {
       console.error("Camera failed:", err);
       setCameraError(describe(err));
       setCamera("error");
     }
-  }, [settings.liteHandModel]);
+  }, [settings.cameraModel, settings.liteHandModel]);
 
   const enable = useCallback(async () => {
     setMic("starting");
@@ -71,6 +71,18 @@ export const useDevices = (settings: Settings): Devices => {
     firstDeviceId.current = settings.micDeviceId;
     if (audioEngine.running) enable();
   }, [settings.micDeviceId, enable]);
+
+  // A different camera model: restart the tracker with it.
+  const modelKey = `${settings.cameraModel}/${settings.liteHandModel}`;
+  const firstModel = useRef(modelKey);
+  useEffect(() => {
+    if (modelKey === firstModel.current) return;
+    firstModel.current = modelKey;
+    if (handTracker.running) {
+      handTracker.stop();
+      startCamera();
+    }
+  }, [modelKey, startCamera]);
 
   // Turning the camera setting off stops it; turning it on again starts it.
   useEffect(() => {

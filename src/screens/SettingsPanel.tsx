@@ -5,7 +5,7 @@ import { Modal, Pill } from "../components/ui";
 import { forgetDelays, learnedMicOffset, MIN_TAKES } from "../state/latency";
 import { DEFAULT_SETTINGS, Settings } from "../state/settings";
 import { openPage, SAVED_TOOLS, saveTools, TOOLS, URL_OVERRIDES } from "../state/tools";
-import { DEFAULT_HAND_TUNING, handTracker } from "../video/HandTracker";
+import { DEFAULT_HAND_TUNING, DEFAULT_POSE_TUNING, handTracker } from "../video/HandTracker";
 
 interface Props {
   settings: Settings;
@@ -45,7 +45,16 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
       .catch(() => setMics([]));
   }, []);
 
-  const t = settings.handTuning;
+  // The two camera models can't share a page (both libraries load WebAssembly
+  // that clashes), so switching saves the choice and reloads.
+  const switchModel = (m: Settings["cameraModel"]) => {
+    if (m === settings.cameraModel) return;
+    update({ cameraModel: m });
+    window.setTimeout(() => window.location.reload(), 300);
+  };
+  // The together/apart thresholds of the camera model in use.
+  const tuningKey = settings.cameraModel === "pose" ? "poseTuning" : "handTuning";
+  const t = settings[tuningKey];
 
   return (
     <Modal title="Settings" onClose={onClose} wide>
@@ -61,13 +70,6 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
           </Row>
 
           <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-400 mt-5">Metronome</h3>
-          <Row label="Count-in">
-            {([1, 2] as const).map((n) => (
-              <Pill key={n} selected={settings.countInMeasures === n} onClick={() => update({ countInMeasures: n })}>
-                {n} measure{n > 1 ? "s" : ""}
-              </Pill>
-            ))}
-          </Row>
           <Row label="Click while performing" hint="Turn off to test whether students can keep a steady beat on their own.">
             <Toggle on={settings.metronomeDuringLine} onChange={(v) => update({ metronomeDuringLine: v })} />
           </Row>
@@ -136,14 +138,27 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
           <Row label="Use camera" hint="Checks that hands stay together on long notes, and catches claps too soft to hear.">
             <Toggle on={settings.useCamera} onChange={(v) => update({ useCamera: v })} />
           </Row>
-          <Row label="Hand model" hint="Lite is faster on Chromebooks; Full is more accurate.">
-            <Pill selected={settings.liteHandModel} onClick={() => update({ liteHandModel: true })}>
-              Lite
+          <Row
+            label="Camera model"
+            hint="Body follows the arms, so it keeps both hands while they're pressed together (much better at claps and held notes). Hands is the older model."
+          >
+            <Pill selected={settings.cameraModel === "pose"} onClick={() => switchModel("pose")}>
+              Body
             </Pill>
-            <Pill selected={!settings.liteHandModel} onClick={() => update({ liteHandModel: false })}>
-              Full
+            <Pill selected={settings.cameraModel === "hands"} onClick={() => switchModel("hands")}>
+              Hands
             </Pill>
           </Row>
+          {settings.cameraModel === "hands" && (
+            <Row label="Hand model" hint="Lite is faster on Chromebooks; Full is more accurate.">
+              <Pill selected={settings.liteHandModel} onClick={() => update({ liteHandModel: true })}>
+                Lite
+              </Pill>
+              <Pill selected={!settings.liteHandModel} onClick={() => update({ liteHandModel: false })}>
+                Full
+              </Pill>
+            </Row>
+          )}
           {settings.useCamera && handTracker.running && (
             <div className="py-3">
               <p className="font-semibold mb-1">Tune hand detection</p>
@@ -163,7 +178,7 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
                   onChange={(e) => {
                     const v = parseFloat(e.target.value);
                     update({
-                      handTuning: {
+                      [tuningKey]: {
                         togetherBelow: v,
                         apartAbove: Math.max(t.apartAbove, v + 0.1),
                       },
@@ -182,7 +197,7 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
                   onChange={(e) => {
                     const v = parseFloat(e.target.value);
                     update({
-                      handTuning: {
+                      [tuningKey]: {
                         apartAbove: v,
                         togetherBelow: Math.min(t.togetherBelow, v - 0.1),
                       },
@@ -193,7 +208,9 @@ const SettingsPanel: React.FC<Props> = ({ settings, update, onClose }) => {
                 <span className="font-mono w-10">{t.apartAbove.toFixed(2)}</span>
               </div>
               <div className="mt-2">
-                <Pill onClick={() => update({ handTuning: DEFAULT_HAND_TUNING })}>Reset to defaults</Pill>
+                <Pill onClick={() => update({ [tuningKey]: tuningKey === "poseTuning" ? DEFAULT_POSE_TUNING : DEFAULT_HAND_TUNING })}>
+                  Reset to defaults
+                </Pill>
               </div>
             </div>
           )}

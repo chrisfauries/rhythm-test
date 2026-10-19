@@ -246,7 +246,7 @@ const GuidedTakes: React.FC<{
   const exercise = findExercise(plan.line)!.exercise;
   const bpm = Math.max(40, Math.min(200, plan.bpm + person.tempoShift));
   const takeSettings: Settings = useMemo(
-    () => ({ ...settings, tempo: bpm, activity: plan.activity, metronomeDuringLine: plan.click, countInMeasures: 1 }),
+    () => ({ ...settings, tempo: bpm, activity: plan.activity, metronomeDuringLine: plan.click }),
     [settings, bpm, plan],
   );
   const info = activityInfo(plan.activity);

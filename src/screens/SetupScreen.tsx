@@ -5,7 +5,7 @@ import { Button, Card, Icon, Pill, SectionLabel, StatusPill, StatusTone } from "
 import { LevelMeter } from "../components/LiveWidgets";
 import { ACTIVITIES, activityInfo } from "../music/activity";
 import { customExercise, Exercise, PAGES } from "../music/book";
-import { RhythmParseError } from "../music/rhythm";
+import { isCompound, RhythmParseError } from "../music/rhythm";
 import { ModelStatus } from "../speech/voskModel";
 import { audioEngine } from "../audio/AudioEngine";
 import { Devices } from "../state/devices";
@@ -234,6 +234,11 @@ const SetupScreen: React.FC<Props> = ({
               <span className="text-xs text-slate-400 ml-1">BPM</span>
             </span>
           </div>
+          {exercise && isCompound(exercise.line.timeSig) && (
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {exercise.timeSig}: the tempo and the click are the dotted quarter, felt in big beats (eighth notes at {settings.tempo * 3}).
+            </p>
+          )}
           <div className="flex flex-wrap justify-center gap-2 mt-2">
             {ACTIVITIES.map((a) => (
               <Pill key={a.id} selected={settings.activity === a.id} onClick={() => update({ activity: a.id })} title={a.hint}>

@@ -101,6 +101,37 @@ describe("analyzeTake", () => {
     expect(analyzeTake({ ...base, activity: "count-notes", frames: frames(14.05) }).rests).toBeNull();
   });
 
+  it("expects a pulse on every rest, eighth rests too", () => {
+    // 60 bpm from t=10: "q 8r 8 q q": the eighth rest is at 11.0-11.5.
+    const short = parseLine("q 8r 8 q q", "4/4");
+    const frames = (dipAt: number | null) =>
+      Array.from({ length: 50 }, (_, i) => {
+        const time = 10 + i * 0.1;
+        const palmY = dipAt !== null && Math.abs(time - dipAt) < 0.15 ? 0.6 + 0.25 * (1 - Math.abs(time - dipAt) / 0.15) : 0.6;
+        return { time, together: false, palmY, scale: 0.1 };
+      });
+    const input = { ...base, line: short, claps: [10, 11.5, 12, 13] };
+    expect(analyzeTake({ ...input, frames: frames(11.05) }).rests!.map((r) => r.status)).toEqual(["pulsed"]);
+    expect(analyzeTake({ ...input, frames: frames(null) }).rests!.map((r) => r.status)).toEqual(["missed"]);
+  });
+
+  it("checks the hands stay together through any note longer than a beat, dotted quarters too", () => {
+    // "q. 8 h": the dotted quarter (10-11.5) and the half note (12-14) are both checked.
+    const dotted = parseLine("q. 8 h", "4/4");
+    const frames = Array.from({ length: 50 }, (_, i) => ({ time: 10 + i * 0.1, together: true }));
+    const r = analyzeTake({ ...base, line: dotted, claps: [10, 11.5, 12], frames });
+    expect(r.notes.map((n) => n.hold?.status ?? null)).toEqual(["held", null, "held"]);
+  });
+
+  it("goes by the dotted quarter in 6/8: one pulse per dotted-quarter rest, holds only past a dotted quarter", () => {
+    // Eighths at 120 bpm from t=10: "q. q.r | h." is 10-11.5, a rest 11.5-13, then 13-16.
+    const six = parseLine("q. q.r | h.", "6/8");
+    const frames = Array.from({ length: 60 }, (_, i) => ({ time: 10 + i * 0.1, together: true, palmY: 0.6, scale: 0.1 }));
+    const r = analyzeTake({ ...base, line: six, bpm: 120, claps: [10, 13], frames });
+    expect(r.notes.map((n) => n.hold?.status ?? null)).toEqual([null, "held"]);
+    expect(r.rests!.map((p) => p.pos)).toEqual([1.5]);
+  });
+
   it("counts a pulse that goes off the bottom of the camera's view", () => {
     // Palms move down, then the camera loses them for 0.3 s around the rest beat.
     const frames = Array.from({ length: 80 }, (_, i) => {

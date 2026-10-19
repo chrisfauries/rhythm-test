@@ -42,7 +42,7 @@ const load = async (file: File): Promise<{ exercise: Exercise; outcome: TakeOutc
   const input = heard ? { ...recorded, claps: heard.claps, words: heard.words } : recorded;
   const result = analyzeTake({
     line: exercise.line,
-    bpm: diag.exercise.tempo,
+    bpm: 60 / diag.timing.secPerBeat,
     startTime: diag.timing.lineStart,
     activity,
     strictness: diag.settings.strictness ?? "normal",

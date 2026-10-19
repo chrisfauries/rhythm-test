@@ -73,8 +73,9 @@ const PerformScreen: React.FC<Props> = ({ exercise, settings, onFinished, onCanc
       const t = runner.timing;
       const now = audioEngine.audibleTime();
       if (now < t.lineStart) {
-        const beat = Math.floor((now - t.countInStart) / t.secPerBeat);
-        setCountIn(beat >= 0 ? countInWord(beat, t.countInBeats) : "");
+        const per = t.beatsPerClick ?? 1;
+        const beat = Math.floor((now - t.countInStart) / (t.secPerBeat * per));
+        setCountIn(beat >= 0 ? countInWord(beat, t.countInBeats / per) : "");
       } else if (now < t.lineEnd + 0.3) {
         setStage("playing");
         setCountIn("");
@@ -139,16 +140,7 @@ const PerformScreen: React.FC<Props> = ({ exercise, settings, onFinished, onCanc
                 {claps.map((c) => {
                   if (c.pos < -1) return null;
                   const row = layout.rows[layout.rowOf(c.pos)];
-                  return (
-                    <circle
-                      key={c.id}
-                      className="clap-pop"
-                      cx={layout.xOf(c.pos)}
-                      cy={row.lineY + 34}
-                      r={9}
-                      fill="#006341"
-                    />
-                  );
+                  return <circle key={c.id} className="clap-pop" cx={layout.xOf(c.pos)} cy={row.lineY + 34} r={9} fill="#006341" />;
                 })}
               </>
             )}

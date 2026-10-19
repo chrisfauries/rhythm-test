@@ -29,3 +29,6 @@ yarn-error.log*
 /ml/.build
 __pycache__/
 /dataset
+
+# Vision model benchmark (ml/vision-bench.js): videos, model files, wasm.
+/public/bench

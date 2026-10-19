@@ -9,7 +9,7 @@ import { activityInfo } from "../music/activity";
 import { Exercise } from "../music/book";
 import { beatLength, countDisplay, countLabel, lineBeats, measureLength, placeNotes } from "../music/rhythm";
 import { useClickTrack } from "../audio/useClickTrack";
-import { TakeOutcome } from "../session/TakeRunner";
+import { takeClicks, TakeOutcome } from "../session/TakeRunner";
 import { estimateLag } from "../training/capture";
 import CaptureDialog from "../training/CaptureDialog";
 import { TRAINING } from "../training/mode";
@@ -46,8 +46,9 @@ interface Item {
   counts: CountResult[];
 }
 
-const LANE = { hands: 30, say: 84 };
-const LANE_HEIGHT = 108;
+/** Lanes under the staff: the first one this far below it, the next ones this far apart. */
+const LANE_FIRST = 30;
+const LANE_STEP = 40;
 const INK = "#0f172a";
 const MUTED = "#94a3b8";
 
@@ -149,13 +150,9 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
   const [clickOn, setClickOn] = useState(true);
   const clicks = useMemo(() => {
     if (lag === null) return [];
-    const { countInStart, secPerBeat, countInBeats, beatsPerMeasure } = outcome.timing;
-    return Array.from({ length: countInBeats + lineBeats(line) }, (_, i) => ({
-      t: countInStart + i * secPerBeat + outcome.micOffset - t0 + lag,
-      accent: i % beatsPerMeasure === 0,
-    }));
+    return takeClicks(outcome.timing, lineBeats(line)).map((c) => ({ t: c.time + outcome.micOffset - t0 + lag, accent: c.accent }));
   }, [lag, outcome, line, t0]);
-  // "Watch this beat" plays a clip with the click all the way through (even
+  // "Play this section" plays a clip with the click all the way through (even
   // when it's off); the take is muted for the first two beats.
   const [clip, setClip] = useState(false);
   /** Video time at which the clip's sound comes back. */
@@ -308,15 +305,18 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
     const d = label === "?" ? "–" : countDisplay(label);
     return `${m + 1}:${/^\d+$/.test(d) || d === "–" ? d : `${n}${d}`}`;
   };
-  /** One thing checked at a spot: passed (true), failed (false) or couldn't tell (null). */
-  type Check = { ok: boolean | null; text: string; why?: string };
+  /** One thing checked at a spot: passed (true), a little off ("warn"), failed (false) or couldn't tell (null). */
+  type Check = { ok: boolean | "warn" | null; text: string; why?: string };
+  /** "slightly late" for a near miss, plain "late" past this many ms (claps; counts get more room, as in grading). */
+  const SLIGHT_MS = 120;
+  const howOff = (status: "early" | "late", offsetMs: number | undefined, slightMs: number) =>
+    offsetMs !== undefined && Math.abs(offsetMs) < slightMs ? `slightly ${status}` : status;
   const noteCheck = (n: NoteResult): Check => {
-    const text = activity.sing ? "Sang in time" : "Clapped in time";
-    if (n.status === "on-time") return { ok: true, text };
-    if (n.status === "early") return { ok: false, text, why: `${Math.abs(n.offsetMs!)} ms early` };
-    if (n.status === "late") return { ok: false, text, why: `${n.offsetMs} ms late` };
-    if (n.status === "seen") return { ok: false, text, why: "seen but not heard: clap louder" };
-    return { ok: false, text, why: "not heard" };
+    const verb = activity.sing ? "Sang" : "Clapped";
+    if (n.status === "on-time") return { ok: true, text: `${verb} in time` };
+    if (n.status === "early" || n.status === "late") return { ok: "warn", text: `${verb} ${howOff(n.status, n.offsetMs, SLIGHT_MS)}` };
+    if (n.status === "seen") return { ok: "warn", text: activity.sing ? "Sang" : "Clapped", why: "seen but not heard: clap louder" };
+    return { ok: false, text: activity.sing ? "Sang" : "Clapped", why: "not heard" };
   };
   const holdCheck = (n: NoteResult): Check | null => {
     if (!n.hold) return null;
@@ -335,11 +335,12 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
         ? { ok: false, text: "Silent clap", why: "pulse your hands down on rests" }
         : { ok: null, text: "Silent clap", why: "couldn't see your hands" };
   const countCheck = (c: CountResult): Check => {
-    const text = `Said “${countDisplay(c.label)}” in time`;
-    if (c.status === "missed") return { ok: false, text, why: "not heard" };
-    if (c.status === "wrong") return { ok: false, text, why: `said “${c.heard ? countDisplay(c.heard) : "?"}”` };
-    if (c.status === "early" || c.status === "late") return { ok: false, text, why: c.status };
-    return { ok: true, text };
+    const word = `“${countDisplay(c.label)}”`;
+    if (c.status === "missed") return { ok: false, text: `Said ${word}`, why: "not heard" };
+    if (c.status === "wrong") return { ok: false, text: `Said ${word}`, why: `heard “${c.heard ? countDisplay(c.heard) : "?"}”` };
+    if (c.status === "early" || c.status === "late")
+      return { ok: "warn", text: `Said ${word} ${howOff(c.status, c.offsetMs, 2 * SLIGHT_MS)}` };
+    return { ok: true, text: `Said ${word} in time` };
   };
 
   // ---- Symbols under the staff ----------------------------------------
@@ -349,18 +350,29 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
     </text>
   );
 
+  // Only the lanes this take has, top to bottom: counts, claps (or sung
+  // notes), sustain (hands held together, or the voice held, through long notes).
+  const lanes = [
+    counts?.length ? "say" : null,
+    activity.claps || activity.sing ? "hands" : null,
+    result.notes.some((n) => n.hold && n.hold.status !== "unknown") ? "hold" : null,
+  ].filter((l): l is "say" | "hands" | "hold" => l !== null);
+  const LANE: Record<string, number> = Object.fromEntries(lanes.map((l, i) => [l, LANE_FIRST + i * LANE_STEP]));
+  const LANE_HEIGHT = lanes.length ? LANE_FIRST + (lanes.length - 1) * LANE_STEP + 22 : 12;
+
   const overlay = (layout: StaffLayout) => {
     const at = (pos: number) => {
       const r = layout.rowOf(Math.max(0, pos));
       return { r, row: layout.rows[r], x: layout.xOf(pos, r) };
     };
-    const showHands = activity.claps || activity.sing;
+    const showHands = lanes.includes("hands");
     return (
       <>
         {layout.rows.map((row, r) => (
           <g key={`labels-${r}`}>
-            {showHands && symbol(11, row.staffBottom + LANE.hands, activity.sing ? "🎵" : "🙌", 16)}
-            {counts && symbol(11, row.staffBottom + LANE.say, "🗣️", 16)}
+            {lanes.includes("say") && symbol(11, row.staffBottom + LANE.say, "🗣️", 16)}
+            {showHands && symbol(11, row.staffBottom + LANE.hands, activity.sing ? "🎵" : "👏", 16)}
+            {lanes.includes("hold") && symbol(11, row.staffBottom + LANE.hold, activity.sing ? "〰️" : "🙌", 16)}
           </g>
         ))}
 
@@ -385,7 +397,7 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
             );
           })()}
 
-        {/* 🙌 row: claps (or sung notes), holds, silent claps */}
+        {/* 👏 row: claps (or sung notes) and silent claps; 🙌 row: holds */}
         {showHands &&
           items.map((it) => {
             const out: React.ReactNode[] = [];
@@ -393,24 +405,25 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
               const { r, row, x } = at(it.pos);
               const y = row.staffBottom + LANE.hands;
               const n = it.note;
-              // Holds: a solid line through the note; ✋ where the hands came apart.
+              // Holds, in their own lane: a solid line through the note; ✋ where the hands came apart.
               if (n.hold && n.hold.status !== "unknown") {
+                const yh = row.staffBottom + LANE.hold;
                 const endPos = Math.min(it.pos + n.len, row.lastPos);
                 const untilPos = n.hold.until !== undefined ? (n.hold.until - result.startTime) / secPerQ : endPos;
                 const lineEnd = n.hold.status === "held" ? endPos : Math.max(it.pos, Math.min(untilPos, endPos));
                 out.push(
                   <line
                     key="hold"
-                    x1={x + 12}
+                    x1={x}
                     x2={layout.xOf(lineEnd, r) - (n.hold.status === "held" ? 6 : 12)}
-                    y1={y}
-                    y2={y}
+                    y1={yh}
+                    y2={yh}
                     stroke={INK}
                     strokeWidth={4}
                     strokeLinecap="round"
                   />,
                 );
-                if (n.hold.status === "released") out.push(symbol(layout.xOf(lineEnd, r), y, "✋", 19, "apart"));
+                if (n.hold.status === "released") out.push(symbol(layout.xOf(lineEnd, r), yh, "✋", 19, "apart"));
               }
               const base = n.status === "missed" ? "❌" : n.status === "seen" ? "🤫" : activity.sing ? "🎵" : "👏";
               out.push(symbol(x, y, base, n.status === "missed" ? 17 : 23, "clap"));
@@ -597,7 +610,22 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
         <ul className="mt-1 flex flex-col gap-1">
           {detail(it).map((c, i) => (
             <li key={i} className="flex items-start gap-2">
-              <span className="shrink-0 w-5 text-center">{c.ok === true ? "✅" : c.ok === false ? "❌" : "❔"}</span>
+              <span className="shrink-0 w-5 text-center">
+                {c.ok === "warn" ? (
+                  <span
+                    aria-label="a little off"
+                    className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-400 text-slate-900 text-[11px] font-black leading-none"
+                  >
+                    !
+                  </span>
+                ) : c.ok === true ? (
+                  "✅"
+                ) : c.ok === false ? (
+                  "❌"
+                ) : (
+                  "❔"
+                )}
+              </span>
               <span>
                 {c.text}
                 {c.why && <span className="text-slate-500 dark:text-slate-400"> ({c.why})</span>}
@@ -735,7 +763,7 @@ const ResultsScreen: React.FC<Props> = ({ exercise, outcome, tempo, onRetry, onN
             )}
             {videoUrl && (
               <Button disabled={lag === null || !sel} onClick={() => sel && watchBeat(sel.pos, sel.len)} title="Tap a note or rest first">
-                ▶ Watch this beat
+                ▶ Play this section
               </Button>
             )}
           </div>

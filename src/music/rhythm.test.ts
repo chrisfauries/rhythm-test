@@ -95,8 +95,12 @@ describe("counts", () => {
     expect(expectedCounts(line, "all").map((c) => c.label)).toEqual(["one", "two", "three", "four", "and"]);
   });
 
-  it("counts eighth-note beats in 6/8", () => {
+  it("counts eighths in 6/8, but a dotted quarter is one beat: just its first number", () => {
     const line = parseLine("q. 8 8 8", "6/8");
-    expect(expectedCounts(line, "notes").map((c) => c.label)).toEqual(["one", "two", "three", "four", "five", "six"]);
+    expect(expectedCounts(line, "notes").map((c) => c.label)).toEqual(["one", "four", "five", "six"]);
+    // A dotted half is two beats: "1 (2 3) 4". A dotted-quarter rest is counted on its beat only.
+    const held = parseLine("h. | q.r 8 8 8", "6/8");
+    expect(expectedCounts(held, "notes").map((c) => c.label)).toEqual(["one", "four", "four", "five", "six"]);
+    expect(expectedCounts(held, "all").map((c) => c.label)).toEqual(["one", "four", "one", "four", "five", "six"]);
   });
 });

@@ -1,5 +1,5 @@
 import { Activity, activityInfo } from "../music/activity";
-import { beatLength, countDisplay, expectedClaps, expectedCounts, Line, lineLength, placeNotes } from "../music/rhythm";
+import { beatLength, countDisplay, expectedClaps, expectedCounts, Line, lineLength, placeNotes, pulseLength } from "../music/rhythm";
 
 // Grades one performance of a line, depending on what the student does
 // (see music/activity.ts): claps (audio, with video as backup), spoken counts
@@ -298,6 +298,8 @@ export const analyzeTake = (input: TakeInput): TakeResult => {
   const secPerBeat = 60 / bpm;
   const secPerQ = secPerBeat / beatLength(line.timeSig);
   const beat = beatLength(line.timeSig);
+  // Rest pulses and holds go by the felt beat: a dotted quarter in 6/8.
+  const felt = pulseLength(line.timeSig);
   const toTime = (pos: number) => startTime + pos * secPerQ;
   const toPos = (time: number) => (time - startTime) / secPerQ;
   const lineEnd = toTime(lineLength(line));
@@ -344,10 +346,10 @@ export const analyzeTake = (input: TakeInput): TakeResult => {
     return { ...base, status: "missed" };
   });
 
-  // ---- Holds (clapping: hands stay together through notes of 2+ beats) ---
+  // ---- Holds (clapping: hands stay together through any note longer than a beat, dotted quarters too; in 6/8, longer than a dotted quarter) ---
   if (input.frames && info.claps) {
     for (const note of notes) {
-      if (note.len < 2 * beat - 1e-6) continue;
+      if (note.len <= felt + 1e-6) continue;
       const from = note.expectedTime + 0.2 * secPerBeat;
       const to = note.expectedTime + note.len * secPerQ - 0.3 * secPerBeat;
       const known = input.frames.filter((f) => f.time >= from && f.time <= to && f.together !== null);
@@ -402,15 +404,21 @@ export const analyzeTake = (input: TakeInput): TakeResult => {
   const tracked = input.frames?.filter((f) => f.palmY != null) ?? [];
   if (info.claps && tracked.length) {
     const pulses = findPulses(input.frames!);
+    const used = new Set<number>();
     const list: RestResult[] = [];
     for (const p of placeNotes(line)) {
-      // A pulse on every beat of a rest that lasts at least a beat.
-      if (!p.note.rest || p.len < beat - 1e-6) continue;
-      for (let k = 0; k * beat < p.len - 1e-6; k++) {
-        const pos = p.pos + k * beat;
+      // Every rest gets a pulse, however short (an eighth rest too), and a
+      // rest longer than a beat one on each of its beats (each dotted quarter in 6/8).
+      if (!p.note.rest) continue;
+      for (let k = 0; k === 0 || k * felt < p.len - 1e-6; k++) {
+        const pos = p.pos + k * felt;
         const t = toTime(pos);
+        // Look for it while the rest (this beat of it) lasts: at least 0.15 s, at most 0.3 s.
+        const lasts = Math.min(felt, p.len - k * felt) * secPerQ;
+        const until = t + Math.min(0.3, Math.max(0.15, lasts));
         const base = { id: list.length, measure: p.measure, index: p.index, pos, expectedTime: t };
-        const pulse = pulses.find((x) => x >= t - 0.15 && x <= t + 0.3);
+        const pulse = pulses.find((x) => x >= t - 0.15 && x <= until && !used.has(x));
+        if (pulse !== undefined) used.add(pulse);
         if (pulse !== undefined) list.push({ ...base, status: "pulsed", time: pulse });
         else if (tracked.some((f) => f.time >= t - 0.3 && f.time <= t + 0.4)) list.push({ ...base, status: "missed" });
         else list.push({ ...base, status: "unknown" });

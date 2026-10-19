@@ -10,7 +10,7 @@ import { AudioEvents, loadAudioModel, modelGraderInput } from "../ml/audioModel"
 import { CountPrediction, loadCountModel } from "../ml/countModel";
 import { toFeatureRate } from "../ml/features";
 import { COUNT_MODEL_RULE, USE_AUDIO_MODEL, USE_COUNT_MODEL } from "../ml/flags";
-import { Line, lineBeats } from "../music/rhythm";
+import { beatsPerPulse, Line, lineBeats } from "../music/rhythm";
 import { CountSession, HeardWord, VoskEvent } from "../speech/CountRecognizer";
 import { refineWordTimes } from "../speech/wordTiming";
 import { learnedMicOffset, recordTakeDelay, takeDelay } from "../state/latency";
@@ -19,6 +19,25 @@ import { TRAINING } from "../training/mode";
 import { cameraLag } from "../video/cameraLag";
 import { HandFrame, HandSnapshot, handTracker, keepSnapshotsNear } from "../video/HandTracker";
 
+/** The count-in is always four clicks, whatever the meter: "1, 2, Ready, Go!". */
+export const COUNT_IN_CLICKS = 4;
+
+type ClickTiming = Pick<TakeTiming, "countInStart" | "secPerBeat" | "countInBeats" | "beatsPerMeasure" | "beatsPerClick">;
+
+/**
+ * The metronome of a take: four count-in clicks, then (with the line) one per
+ * pulse, a dotted quarter in 6/8. Accented: the first count-in click, then
+ * each downbeat of the line.
+ */
+export const takeClicks = (timing: ClickTiming, lineBeats: number) => {
+  const per = timing.beatsPerClick ?? 1;
+  const countIn = Math.round(timing.countInBeats / per);
+  return Array.from({ length: countIn + Math.ceil(lineBeats / per - 1e-6) }, (_, i) => ({
+    time: timing.countInStart + i * per * timing.secPerBeat,
+    accent: i < countIn ? i === 0 : ((i - countIn) * per) % timing.beatsPerMeasure === 0,
+  }));
+};
+
 export interface TakeTiming {
   /** Audible time of the first count-in click. */
   countInStart: number;
@@ -26,8 +45,11 @@ export interface TakeTiming {
   lineStart: number;
   lineEnd: number;
   secPerBeat: number;
+  /** In counted beats (eighths in 6/8), like secPerBeat. */
   countInBeats: number;
   beatsPerMeasure: number;
+  /** Counted beats per metronome click: 3 in 6/8 (a click per dotted quarter); missing in older takes (1). */
+  beatsPerClick?: number;
 }
 
 export interface RawWord extends HeardWord {
@@ -161,9 +183,11 @@ export class TakeRunner {
     model: Model | null,
     private readonly callbacks: TakeCallbacks = {},
   ) {
-    const secPerBeat = 60 / bpm;
+    // The tempo is in pulses (dotted quarters in 6/8); timing runs in counted beats.
+    const beatsPerClick = beatsPerPulse(line.timeSig);
+    const secPerBeat = 60 / bpm / beatsPerClick;
     const beatsPerMeasure = line.timeSig.num;
-    const countInBeats = beatsPerMeasure * settings.countInMeasures;
+    const countInBeats = COUNT_IN_CLICKS * beatsPerClick;
     const countInStart = audioEngine.now() + LEAD_IN;
     const lineStart = countInStart + countInBeats * secPerBeat;
     this.timing = {
@@ -173,6 +197,7 @@ export class TakeRunner {
       secPerBeat,
       countInBeats,
       beatsPerMeasure,
+      beatsPerClick,
     };
     this.detector = new ClapDetector(audioEngine.sampleRate, CANDIDATE_OPTIONS);
     this.bias = clapBias(settings.clapBias, settings.clapSensitivity);
@@ -204,12 +229,8 @@ export class TakeRunner {
   }
 
   start() {
-    const { countInStart, countInBeats, secPerBeat, beatsPerMeasure, lineEnd } = this.timing;
-    const totalBeats = countInBeats + (this.settings.metronomeDuringLine ? lineBeats(this.line) : 0);
-    const events = Array.from({ length: totalBeats }, (_, i) => ({
-      time: countInStart + i * secPerBeat,
-      accent: i % beatsPerMeasure === 0,
-    }));
+    const { lineEnd, secPerBeat } = this.timing;
+    const events = takeClicks(this.timing, this.settings.metronomeDuringLine ? lineBeats(this.line) : 0);
     this.clickTimes = events.map((e) => e.time);
     this.startedAt = new Date().toISOString();
     this.clockAtStart = audioEngine.clockInfo();
@@ -293,7 +314,7 @@ export class TakeRunner {
    */
   private checkBleed() {
     this.bleedChecked = true;
-    const countIn = this.clickTimes.slice(0, this.timing.countInBeats);
+    const countIn = this.clickTimes.slice(0, COUNT_IN_CLICKS);
     if (countIn.length < 3) return;
     const hits = countIn
       .map((c) => this.onsets.find((o) => o.time >= c && o.time <= c + 0.3))
@@ -410,7 +431,7 @@ export class TakeRunner {
 
     const result = analyzeTake({
       line: this.line,
-      bpm: this.bpm,
+      bpm: 60 / this.timing.secPerBeat,
       startTime: this.timing.lineStart,
       activity: info.id,
       strictness: this.settings.strictness,

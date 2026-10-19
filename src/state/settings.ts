@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Strictness } from "../analysis/analyze";
 import { Activity } from "../music/activity";
-import { DEFAULT_HAND_TUNING, HandTuning } from "../video/HandTracker";
+import { DEFAULT_HAND_TUNING, DEFAULT_POSE_TUNING, HandTuning } from "../video/HandTracker";
 
 export interface Settings {
   studentName: string;
@@ -9,11 +9,14 @@ export interface Settings {
   /** What the student does: clap and/or count, count only, or sing. */
   activity: Activity;
   strictness: Strictness;
-  countInMeasures: 1 | 2;
   metronomeDuringLine: boolean;
   clickVolume: number;
   useCamera: boolean;
   liteHandModel: boolean;
+  /** What tracks the hands: body pose (default) or the older hand model (lite or full, by liteHandModel). */
+  cameraModel: "pose" | "hands";
+  /** Together/apart thresholds for the pose model (handTuning is the hand model's). */
+  poseTuning: HandTuning;
   micDeviceId: string;
   /** 1 (only loud claps) .. 5 (very sensitive). */
   clapSensitivity: number;
@@ -31,11 +34,12 @@ export const DEFAULT_SETTINGS: Settings = {
   tempo: 72,
   activity: "clap-count-all",
   strictness: "normal",
-  countInMeasures: 1,
   metronomeDuringLine: true,
   clickVolume: 0.6,
   useCamera: true,
   liteHandModel: true,
+  cameraModel: "pose",
+  poseTuning: DEFAULT_POSE_TUNING,
   micDeviceId: "",
   clapSensitivity: 3,
   clapBias: null,
@@ -75,9 +79,6 @@ export const useSettings = () => {
       // ignore
     }
   }, [settings]);
-  const update = useCallback(
-    (patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })),
-    []
-  );
+  const update = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
   return [settings, update] as const;
 };
